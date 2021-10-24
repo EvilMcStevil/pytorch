@@ -4,7 +4,7 @@
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/macros/Export.h>
 
-#ifdef CUDART_VERSION
+#ifdef USE_CUSOLVER
 
 namespace at {
 namespace cuda {
@@ -1959,4 +1959,4 @@ void xsyevd<c10::complex<double>, double>(
 } // namespace cuda
 } // namespace at
 
-#endif // CUDART_VERSION
+#endif // USE_CUSOLVER

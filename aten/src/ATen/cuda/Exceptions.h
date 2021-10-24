@@ -4,7 +4,7 @@
 #include <cusparse.h>
 #include <c10/macros/Export.h>
 
-#ifdef CUDART_VERSION
+#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION)
 #include <cusolver_common.h>
 #endif
 
@@ -65,7 +65,7 @@ const char *cusparseGetErrorString(cusparseStatus_t status);
   } while (0)
 
 // cusolver related headers are only supported on cuda now
-#ifdef CUDART_VERSION
+#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION)
 
 namespace at { namespace cuda { namespace solver {
 C10_EXPORT const char* cusolverGetErrorMessage(cusolverStatus_t status);

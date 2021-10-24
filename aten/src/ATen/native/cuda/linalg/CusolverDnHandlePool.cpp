@@ -1,7 +1,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/DeviceThreadHandles.h>
 
-#ifdef CUDART_VERSION
+#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION)
 
 namespace at { namespace cuda {
 namespace {

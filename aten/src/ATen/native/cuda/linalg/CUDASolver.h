@@ -2,12 +2,13 @@
 
 #include <ATen/cuda/CUDAContext.h>
 
-#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION) && CUSOLVER_VERSION >= 11000
+#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION)
+#define USE_CUSOLVER
+
+#if defined(CUDART_VERSION) && CUSOLVER_VERSION >= 11000
 // cuSOLVER version >= 11000 includes 64-bit API
 #define USE_CUSOLVER_64_BIT
 #endif
-
-#ifdef CUDART_VERSION
 
 namespace at {
 namespace cuda {

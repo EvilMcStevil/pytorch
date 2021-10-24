@@ -447,9 +447,9 @@ if(USE_CUDA AND NOT USE_ROCM)
       ${CUDA_curand_LIBRARY}
       )
    if(NOT BUILD_LAZY_CUDA_LINALG)
-     list(APPEND ATen_CUDA_DEPENDENCY_LIBS
-       ${CUDA_cusolver_LIBRARY}
-     )
+     #list(APPEND ATen_CUDA_DEPENDENCY_LIBS
+     #  ${CUDA_cusolver_LIBRARY}
+     #)
    endif()
   endif()
 

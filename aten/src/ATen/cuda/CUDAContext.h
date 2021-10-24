@@ -6,7 +6,7 @@
 #include <cusparse.h>
 #include <cublas_v2.h>
 
-#ifdef CUDART_VERSION
+#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION)
 #include <cusolverDn.h>
 #endif
 
@@ -72,7 +72,7 @@ TORCH_CUDA_CPP_API Allocator* getCUDADeviceAllocator();
 TORCH_CUDA_CPP_API cusparseHandle_t getCurrentCUDASparseHandle();
 TORCH_CUDA_CPP_API cublasHandle_t getCurrentCUDABlasHandle();
 
-#ifdef CUDART_VERSION
+#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION)
 TORCH_CUDA_CPP_API cusolverDnHandle_t getCurrentCUDASolverDnHandle();
 #endif
 

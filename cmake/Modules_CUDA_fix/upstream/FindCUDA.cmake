@@ -1033,10 +1033,10 @@ elseif(CUDA_VERSION VERSION_GREATER "5.0")
 elseif(NOT CUDA_VERSION VERSION_LESS "4.0")
   find_cuda_helper_libs(npp)
 endif()
-if(NOT CUDA_VERSION VERSION_LESS "7.0")
+#if(NOT CUDA_VERSION VERSION_LESS "7.0")
   # cusolver showed up in version 7.0
-  find_cuda_helper_libs(cusolver)
-endif()
+  #find_cuda_helper_libs(cusolver)
+#endif()
 
 if (CUDA_BUILD_EMULATION)
   set(CUDA_CUFFT_LIBRARIES ${CUDA_cufftemu_LIBRARY})
