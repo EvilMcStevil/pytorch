@@ -2632,54 +2632,33 @@
   variants: function
   dispatch:
     CPU: _fft_r2c_mkl
-    CUDA: _fft_r2c_cufft
 
 - func: _fft_r2c.out(Tensor self, int[] dim, int normalization, bool onesided, *, Tensor(a!) out) -> Tensor(a!)
   variants: function
   dispatch:
     CPU: _fft_r2c_mkl_out
-    CUDA: _fft_r2c_cufft_out
 
 # Complex to real inverse FFT
 - func: _fft_c2r(Tensor self, int[] dim, int normalization, int last_dim_size) -> Tensor
   variants: function
   dispatch:
     CPU: _fft_c2r_mkl
-    CUDA: _fft_c2r_cufft
 
 - func: _fft_c2r.out(Tensor self, int[] dim, int normalization, int last_dim_size, *, Tensor(a!) out) -> Tensor(a!)
   variants: function
   dispatch:
     CPU: _fft_c2r_mkl_out
-    CUDA: _fft_c2r_cufft_out
 
 # Standard complex to complex FFT (forward or backward)
 - func: _fft_c2c(Tensor self, int[] dim, int normalization, bool forward) -> Tensor
   variants: function
   dispatch:
     CPU: _fft_c2c_mkl
-    CUDA: _fft_c2c_cufft
 
 - func: _fft_c2c.out(Tensor self, int[] dim, int normalization, bool forward, *, Tensor(a!) out) -> Tensor(a!)
   variants: function
   dispatch:
     CPU: _fft_c2c_mkl_out
-    CUDA: _fft_c2c_cufft_out
-
-- func: _validate_compressed_sparse_indices(bool is_crow, Tensor compressed_idx, Tensor plain_idx, int cdim, int dim, int nnz) -> ()
-  device_check: NoCheck
-  variants: function
-  dispatch:
-    CPU: _validate_compressed_sparse_indices_cpu
-    CUDA: _validate_compressed_sparse_indices_cuda
-
-- func: _cufft_get_plan_cache_size(int device_index) -> int
-
-- func: _cufft_get_plan_cache_max_size(int device_index) -> int
-
-- func: _cufft_set_plan_cache_max_size(int device_index, int max_size) -> ()
-
-- func: _cufft_clear_plan_cache(int device_index) -> ()
 
 - func: index.Tensor(Tensor self, Tensor?[] indices) -> Tensor
   device_check: NoCheck   # TensorIterator

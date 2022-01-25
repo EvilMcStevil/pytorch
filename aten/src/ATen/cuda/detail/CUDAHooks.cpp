@@ -411,7 +411,7 @@ double CUDAHooks::batchnormMinEpsilonCuDNN() const {
       "Cannot query CUDNN_BN_MIN_EPSILON if ATen_cuda is not built with CuDNN");
 #endif
 }
-
+/*
 int64_t CUDAHooks::cuFFTGetPlanCacheMaxSize(int64_t device_index) const {
   return at::native::detail::cufft_get_plan_cache_max_size_impl(device_index);
 }
@@ -426,7 +426,7 @@ int64_t CUDAHooks::cuFFTGetPlanCacheSize(int64_t device_index) const {
 
 void CUDAHooks::cuFFTClearPlanCache(int64_t device_index) const {
   at::native::detail::cufft_clear_plan_cache_impl(device_index);
-}
+}*/
 
 int CUDAHooks::getNumGPUs() const {
   return at::cuda::device_count();

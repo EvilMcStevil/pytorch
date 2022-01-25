@@ -427,7 +427,6 @@ cu_library(
     deps = [
         ":aten_cuda_cpp",
         "@cuda//:cublas",
-        "@cuda//:cufft",
         "@cuda//:cusparse",
     ],
     alwayslink = True,

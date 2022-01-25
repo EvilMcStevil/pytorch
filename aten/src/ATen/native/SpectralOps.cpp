@@ -735,6 +735,7 @@ Tensor fft_ifftshift(const Tensor& x, at::OptionalIntArrayRef dim_opt) {
 
 // We call the following methods via CUDA hooks because they are really only
 // valid when CUDA is available. See native/cuda/CuFFTPlanCache.h for more details.
+/*
 int64_t _cufft_get_plan_cache_max_size(int64_t device_index) {
   return detail::getCUDAHooks().cuFFTGetPlanCacheMaxSize(device_index);
 }
@@ -750,6 +751,7 @@ int64_t _cufft_get_plan_cache_size(int64_t device_index) {
 void _cufft_clear_plan_cache(int64_t device_index) {
   detail::getCUDAHooks().cuFFTClearPlanCache(device_index);
 }
+*/
 
 template <typename Stream, typename T>
 static Stream& write_opt(Stream& SS, const optional<T>& value) {

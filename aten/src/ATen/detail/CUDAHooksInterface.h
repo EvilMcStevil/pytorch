@@ -167,8 +167,8 @@ struct TORCH_API CUDAHooksInterface {
     TORCH_CHECK(false,
         "Cannot query batchnormMinEpsilonCuDNN() without ATen_cuda library. ", CUDA_HELP);
   }
-
-  virtual int64_t cuFFTGetPlanCacheMaxSize(int64_t /*device_index*/) const {
+/*
+  virtual int64_t cuFFTGetPlanCacheMaxSize(int64_t device_index) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 
@@ -183,7 +183,7 @@ struct TORCH_API CUDAHooksInterface {
   virtual void cuFFTClearPlanCache(int64_t device_index) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
-
+*/
   virtual int getNumGPUs() const {
     return 0;
   }

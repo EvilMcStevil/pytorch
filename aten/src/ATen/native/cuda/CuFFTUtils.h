@@ -5,15 +5,15 @@
 #include <string>
 #include <stdexcept>
 #include <sstream>
-#include <cufft.h>
-#include <cufftXt.h>
+//#include <cufft.h>
+//#include <cufftXt.h>
 
 namespace at { namespace native {
 
 // This means that max dim is 3 + 2 = 5 with batch dimension and possible
 // complex dimension
 constexpr int max_rank = 3;
-
+/*
 static inline std::string _cudaGetErrorEnum(cufftResult error)
 {
   switch (error)
@@ -68,6 +68,6 @@ static inline void CUFFT_CHECK(cufftResult error)
     ss << "cuFFT error: " << _cudaGetErrorEnum(error);
     AT_ERROR(ss.str());
   }
-}
+}*/
 
 }} // at::native

@@ -430,20 +430,20 @@ if(USE_CUDA AND NOT USE_ROCM)
   if($ENV{ATEN_STATIC_CUDA})
     list(APPEND ATen_CUDA_DEPENDENCY_LIBS
       ${CUDA_LIBRARIES}
-      ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcusparse_static.a
+      #${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcusparse_static.a
       ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcurand_static.a
-      ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcufft_static_nocallback.a
+      ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcublas_static.a
       )
-   if(NOT BUILD_LAZY_CUDA_LINALG)
-     list(APPEND ATen_CUDA_DEPENDENCY_LIBS
-       ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcusolver_static.a
-       ${CUDA_TOOLKIT_ROOT_DIR}/lib64/liblapack_static.a     # needed for libcusolver_static
-       )
-   endif()
+   #if(NOT BUILD_LAZY_CUDA_LINALG)
+   #  list(APPEND ATen_CUDA_DEPENDENCY_LIBS
+   #    ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcusolver_static.a
+   #    ${CUDA_TOOLKIT_ROOT_DIR}/lib64/liblapack_static.a     # needed for libcusolver_static
+   #    )
+   #endif()
   else()
     list(APPEND ATen_CUDA_DEPENDENCY_LIBS
       ${CUDA_LIBRARIES}
-      ${CUDA_cusparse_LIBRARY}
+      #${CUDA_cusparse_LIBRARY}
       ${CUDA_curand_LIBRARY}
       )
    if(NOT BUILD_LAZY_CUDA_LINALG)
