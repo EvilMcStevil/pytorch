@@ -637,6 +637,8 @@ if(INTERN_BUILD_MOBILE)
   # Enable it elsewhere to capture build error.
   set(INTERN_DISABLE_MOBILE_INTERP ON)
 endif()
+# Imagus Modifications
+set(INTERN_DISABLE_AUTOGRAD ON)
 
 # ---[ Utils
 include(cmake/public/utils.cmake)
