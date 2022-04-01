@@ -172,15 +172,15 @@ struct TORCH_API CUDAHooksInterface {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual void cuFFTSetPlanCacheMaxSize(int64_t /*device_index*/, int64_t /*max_size*/) const {
+  virtual void cuFFTSetPlanCacheMaxSize(int64_t device_index, int64_t max_size) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual int64_t cuFFTGetPlanCacheSize(int64_t /*device_index*/) const {
+  virtual int64_t cuFFTGetPlanCacheSize(int64_t device_index) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 
-  virtual void cuFFTClearPlanCache(int64_t /*device_index*/) const {
+  virtual void cuFFTClearPlanCache(int64_t device_index) const {
     TORCH_CHECK(false, "Cannot access cuFFT plan cache without ATen_cuda library. ", CUDA_HELP);
   }
 

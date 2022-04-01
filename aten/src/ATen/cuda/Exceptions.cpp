@@ -45,6 +45,7 @@ C10_EXPORT const char* _cublasGetErrorEnum(cublasStatus_t error) {
 
 } // namespace blas
 
+/*
 #ifdef CUDART_VERSION
 namespace solver {
 
@@ -64,5 +65,5 @@ C10_EXPORT const char* cusolverGetErrorMessage(cusolverStatus_t status) {
 
 } // namespace solver
 #endif
-
+*/
 }} // namespace at::cuda
