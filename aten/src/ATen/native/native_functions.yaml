@@ -6935,8 +6935,8 @@
   device_check: NoCheck
   device_guard: False
   dispatch:
-    ZeroTensor, Meta, CPU, CUDA, QuantizedCPU, QuantizedCUDA, MPS: view
-    MkldnnCPU: mkldnn_view
+    ZeroTensor, CPU, CUDA, Meta, QuantizedCPU, QuantizedCUDA, MPS: view
+    MkldnnCPU: mkldnn_reshape
     NestedTensorCPU, NestedTensorCUDA: view_nested
 
 # Warning: If you want to change the name or overload name of this
