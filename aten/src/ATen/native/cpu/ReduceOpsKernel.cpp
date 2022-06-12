@@ -253,6 +253,7 @@ static void norm_kernel_tensor_iterator_impl(
       );
     });
   } else if (val == 2) {
+    /*
     if (use_fast_path) {
       AT_DISPATCH_FLOATING_TYPES_AND(kBFloat16, iter.input_dtype(), "norm_cpu", [&] {
         // use float as accumulate type for BFloat16
@@ -282,7 +283,7 @@ static void norm_kernel_tensor_iterator_impl(
         });
       });
       return;
-    }
+    }*/
     AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(kHalf, kBFloat16, iter.input_dtype(), "norm_cpu", [&] {
       using acc_t = typename scalar_value_type<scalar_t>::type;
       binary_kernel_reduce(
