@@ -24,7 +24,7 @@ void destroyCusparseHandle(cusparseHandle_t handle) {
 using CuSparsePoolType = DeviceThreadHandlePool<cusparseHandle_t, createCusparseHandle, destroyCusparseHandle>;
 
 } // namespace
-
+/*
 cusparseHandle_t getCurrentCUDASparseHandle() {
   int device;
   AT_CUDA_CHECK(cudaGetDevice(&device));
@@ -42,5 +42,5 @@ cusparseHandle_t getCurrentCUDASparseHandle() {
   TORCH_CUDASPARSE_CHECK(cusparseSetStream(handle, c10::cuda::getCurrentCUDAStream()));
   return handle;
 }
-
+*/
 }} // namespace at::cuda

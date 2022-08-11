@@ -3,7 +3,7 @@
 #include <cstdint>
 
 #include <cuda_runtime_api.h>
-#include <cusparse.h>
+//#include <cusparse.h>
 #include <cublas_v2.h>
 
 #if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION)
@@ -69,7 +69,7 @@ TORCH_CUDA_CPP_API bool canDeviceAccessPeer(
 TORCH_CUDA_CPP_API Allocator* getCUDADeviceAllocator();
 
 /* Handles */
-TORCH_CUDA_CPP_API cusparseHandle_t getCurrentCUDASparseHandle();
+//TORCH_CUDA_CPP_API cusparseHandle_t getCurrentCUDASparseHandle();
 TORCH_CUDA_CPP_API cublasHandle_t getCurrentCUDABlasHandle();
 
 #if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION)
