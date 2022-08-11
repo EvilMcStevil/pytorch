@@ -2660,6 +2660,13 @@
   dispatch:
     CPU: _fft_c2c_mkl_out
 
+- func: _validate_compressed_sparse_indices(bool is_crow, Tensor compressed_idx, Tensor plain_idx, int cdim, int dim, int nnz) -> ()
+  device_check: NoCheck
+  variants: function
+  dispatch:
+    CPU: _validate_compressed_sparse_indices_cpu
+    CUDA: _validate_compressed_sparse_indices_cuda
+
 - func: index.Tensor(Tensor self, Tensor?[] indices) -> Tensor
   device_check: NoCheck   # TensorIterator
   structured_delegate: index.Tensor_out

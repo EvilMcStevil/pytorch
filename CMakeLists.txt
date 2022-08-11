@@ -638,7 +638,7 @@ if(INTERN_BUILD_MOBILE)
   set(INTERN_DISABLE_MOBILE_INTERP ON)
 endif()
 # Imagus Modifications
-set(INTERN_DISABLE_AUTOGRAD ON)
+#set(INTERN_DISABLE_AUTOGRAD ON)
 
 # ---[ Utils
 include(cmake/public/utils.cmake)

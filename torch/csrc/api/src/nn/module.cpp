@@ -2,7 +2,7 @@
 
 #include <torch/ordered_dict.h>
 
-#include <torch/csrc/autograd/generated/VariableType.h>
+//#include <torch/csrc/autograd/generated/VariableType.h>
 
 #include <c10/util/Exception.h>
 

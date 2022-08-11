@@ -418,27 +418,29 @@ set(TORCH_GENERATED_CODE
   ${GENERATED_TESTING_PYTHON}
   )
 
-set(GEN_PER_OPERATOR_FLAG)
-if(USE_PER_OPERATOR_HEADERS)
-  list(APPEND GEN_PER_OPERATOR_FLAG "--per_operator_headers")
-endif()
-
 file(GLOB_RECURSE autograd_python "${TOOLS_PATH}/autograd/*.py")
 file(GLOB_RECURSE autograd_yaml "${TOOLS_PATH}/autograd/*.yaml")
 file(GLOB_RECURSE autograd_templates "${TOOLS_PATH}/autograd/templates/*")
-add_custom_command(
-  OUTPUT
-  ${TORCH_GENERATED_CODE}
-  COMMAND
-  "${PYTHON_EXECUTABLE}" tools/setup_helpers/generate_code.py
-    --native-functions-path "aten/src/ATen/native/native_functions.yaml"
-    --tags-path "aten/src/ATen/native/tags.yaml"
-    $<$<BOOL:${INTERN_DISABLE_AUTOGRAD}>:--disable-autograd>
-    $<$<BOOL:${SELECTED_OP_LIST}>:--selected-op-list-path="${SELECTED_OP_LIST}">
-    --force_schema_registration
-    --gen_lazy_ts_backend
-    ${GEN_PER_OPERATOR_FLAG}
-  DEPENDS
+
+  set(GEN_SUBSETS)
+  if(NOT BUILD_PYTHON)
+    list(APPEND GEN_SUBSETS --subset="libtorch")
+  endif()
+
+  add_custom_command(
+    OUTPUT
+    ${TORCH_GENERATED_CODE}
+    COMMAND
+    "${PYTHON_EXECUTABLE}" tools/setup_helpers/generate_code.py
+      --native-functions-path "aten/src/ATen/native/native_functions.yaml"
+      --tags-path "aten/src/ATen/native/tags.yaml"
+      $<$<BOOL:${INTERN_DISABLE_AUTOGRAD}>:--disable-autograd>
+      $<$<BOOL:${SELECTED_OP_LIST}>:--selected-op-list-path="${SELECTED_OP_LIST}">
+      --force_schema_registration
+      $<$<BOOL:${BUILD_LAZY_TS_BACKEND}>:--gen_lazy_ts_backend>
+      $<$<BOOL:${USE_PER_OPERATOR_HEADERS}>:--per_operator_headers>
+      ${GEN_SUBSETS}
+    DEPENDS
     "${TORCH_ROOT}/aten/src/ATen/native/native_functions.yaml"
     "${TORCH_ROOT}/aten/src/ATen/native/tags.yaml"
     "${TORCH_ROOT}/aten/src/ATen/native/ts_native_functions.yaml"

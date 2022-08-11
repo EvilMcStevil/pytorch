@@ -33,7 +33,11 @@
 #endif
 
 #ifndef STRONG_HAS_STD_FORMAT
+#if __has_include(<format>) && __cplusplus >= 202002L
+#define STRONG_HAS_STD_FORMAT 1
+#else
 #define STRONG_HAS_STD_FORMAT 0
+#endif
 #endif
 
 #ifndef STRONG_HAS_FMT_FORMAT
