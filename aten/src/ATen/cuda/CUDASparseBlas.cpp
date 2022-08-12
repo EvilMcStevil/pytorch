@@ -2,12 +2,12 @@
   Provides the implementations of cuSPARSE function templates.
 */
 
-#include <ATen/cuda/CUDASparseBlas.h>
+//#include <ATen/cuda/CUDASparseBlas.h>
 
 namespace at {
 namespace cuda {
 namespace sparse {
-
+/*
 template <>
 void csrgeam2_bufferSizeExt<float>(
     CUSPARSE_CSRGEAM2_BUFFERSIZE_ARGTYPES(float)) {
@@ -887,7 +887,7 @@ void bsrsm2_solve<c10::complex<double>>(
 }
 
 #endif // AT_USE_HIPSPARSE_TRIANGULAR_SOLVE
-
+*/
 } // namespace sparse
 } // namespace cuda
 } // namespace at

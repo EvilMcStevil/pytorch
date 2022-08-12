@@ -15,7 +15,7 @@
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
 #else
-#include <ATen/ops/_convert_indices_from_csr_to_coo.h>
+//#include <ATen/ops/_convert_indices_from_csr_to_coo.h>
 #include <ATen/ops/_nnz_native.h>
 #include <ATen/ops/_sparse_compressed_tensor_unsafe_native.h>
 #include <ATen/ops/_sparse_csr_tensor_unsafe_native.h>

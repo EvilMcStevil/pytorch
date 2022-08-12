@@ -20,9 +20,9 @@
 #include <ATen/Operators.h>
 #else
 #include <ATen/ops/_conj_physical_native.h>
-#include <ATen/ops/_convert_indices_from_coo_to_csr_native.h>
-#include <ATen/ops/_convert_indices_from_csr_to_coo_native.h>
-#include <ATen/ops/_convert_indices_from_csr_to_coo.h>
+//#include <ATen/ops/_convert_indices_from_coo_to_csr_native.h>
+//#include <ATen/ops/_convert_indices_from_csr_to_coo_native.h>
+//#include <ATen/ops/_convert_indices_from_csr_to_coo.h>
 #include <ATen/ops/_sparse_bsr_tensor_unsafe_native.h>
 #include <ATen/ops/_sparse_compressed_tensor_unsafe_native.h>
 #include <ATen/ops/_sparse_csr_tensor_unsafe_native.h>
@@ -110,7 +110,7 @@
 
 namespace at {
 namespace meta {
-
+/*
 TORCH_META_FUNC(_convert_indices_from_coo_to_csr)
 (const Tensor& self, const int64_t size, const bool out_int32) {
   TORCH_CHECK(self.dim() <= 1, "Input is supposed to be a vector");
@@ -132,7 +132,7 @@ TORCH_META_FUNC(_convert_indices_from_csr_to_coo)
   c10::TensorOptions options = crow_indices.options().dtype(scalar_type);
   set_output_raw_strided(0, {2, col_indices.numel()}, {}, options, {});
 }
-
+*/
 } // namespace meta
 
 namespace {

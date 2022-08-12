@@ -339,8 +339,6 @@ should_use_int_tensor_ops_ = frozenset(
         "lcm",
         "scatter",
         "gather",
-        "_convert_indices_from_coo_to_csr",
-        "_convert_indices_from_csr_to_coo",
     )
 )
 should_use_complex_tensor_ops_ = frozenset(("view_as_real", "imag", "_conj"))

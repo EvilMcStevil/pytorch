@@ -359,28 +359,6 @@ def override_test_values(arg_map: Dict[str, str], op_name: str, index: int) -> N
             arg_map["self"] = "at::rand({5,5,5}, at::kDouble) + at::ones({5,5,5})"
             arg_map["other"] = "at::rand({5,5,5}, at::kDouble) + at::ones({5,5,5})"
         return
-    if op_name == "_convert_indices_from_csr_to_coo":
-        if index == 0:
-            arg_map["crow_indices"] = "torch::tensor({1}, torch::kInt32)"
-            arg_map["col_indices"] = "torch::tensor({0, 1, 0}, torch::kInt32)"
-            arg_map["out_int32"] = "false"
-        else:
-            arg_map["crow_indices"] = "torch::tensor({0}, torch::kInt32)"
-            arg_map[
-                "col_indices"
-            ] = "torch::tensor({0, 1, 0, 2, 1, 2, 0, 1, 0, 2, 1, 2}, torch::kInt32)"
-            arg_map["out_int32"] = "false"
-        return
-    if op_name == "_convert_indices_from_coo_to_csr":
-        if index == 0:
-            arg_map["self"] = "at::randint(0, 3, {2}, at::kInt)"
-            arg_map["size"] = "10"
-            arg_map["out_int32"] = "false"
-        else:
-            arg_map["self"] = "at::randint(0, 3, {12}, at::kInt)"
-            arg_map["size"] = "24"
-            arg_map["out_int32"] = "false"
-        return
     if op_name in ("diagonal", "linalg_diagonal"):
         arg_map["offset"] = "0"
         arg_map["dim0"] = "1"

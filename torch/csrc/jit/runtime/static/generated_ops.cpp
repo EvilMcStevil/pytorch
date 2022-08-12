@@ -3302,7 +3302,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::renorm, aten_renorm, [](Node* n) -> SROperator {
   LogAndDumpSchema(n);
   return nullptr;
 });
-
+/*
 REGISTER_OPERATOR_FUNCTOR(
     aten::_convert_indices_from_coo_to_csr,
     aten__convert_indices_from_coo_to_csr,
@@ -3353,7 +3353,7 @@ REGISTER_OPERATOR_FUNCTOR(
       LogAndDumpSchema(n);
       return nullptr;
     });
-
+*/
 REGISTER_OPERATOR_FUNCTOR(aten::mse_loss, aten_mse_loss, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
           "aten::mse_loss(Tensor self, Tensor target, int reduction=Mean) -> Tensor"))) {

@@ -1,5 +1,5 @@
 #pragma once
-
+/*
 #include <ATen/Tensor.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDASparse.h>
@@ -13,7 +13,6 @@
 namespace at {
 namespace cuda {
 namespace sparse {
-
 template <typename T, cusparseStatus_t (*destructor)(T*)>
 struct CuSparseDescriptorDeleter {
   void operator()(T* x) {
@@ -214,3 +213,4 @@ class TORCH_CUDA_CPP_API CuSparseSpGEMMDescriptor
 } // namespace sparse
 } // namespace cuda
 } // namespace at
+*/

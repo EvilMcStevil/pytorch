@@ -503,7 +503,7 @@ Tensor sparse_to_dense(const Tensor& self, c10::optional<ScalarType> dtype) {
 Tensor sparse_compressed_to_dense(
     const Tensor& self,
     c10::optional<ScalarType> dtype) {
-  TORCH_CHECK(
+/*  TORCH_CHECK(
       !dtype.has_value(),
       "dtype argument is not supported by sparse_csr_to_dense");
 
@@ -595,7 +595,7 @@ Tensor sparse_compressed_to_dense(
             1, {self.size(-2) / blocksize[0], self.size(-1) / blocksize[1]})
         .transpose(2, 3)
         .reshape(self.sizes());
-  }
+  }*/
   return self.to_sparse().to_dense();
 }
 
@@ -870,6 +870,7 @@ Tensor dense_to_sparse_csc(const Tensor& self) {
 }
 
 Tensor dense_to_sparse_bsr(const Tensor& self, IntArrayRef blocksize) {
+  /*
   TORCH_CHECK(
       blocksize[0] > 0 && blocksize[1] > 0,
       "blocksize needs to be non zero, but got ",
@@ -907,7 +908,7 @@ Tensor dense_to_sparse_bsr(const Tensor& self, IntArrayRef blocksize) {
       not_zero_mask, at::kLong, not_zero_mask.device());
 
   Tensor crow_indices = at::_convert_indices_from_coo_to_csr(
-      row_indices, not_zero_mask.size(0), false /*out_int32*/);
+      row_indices, not_zero_mask.size(0), false);
 
   {
     auto mask_indices = _mask_to_indices(not_zero_mask.flatten());
@@ -926,6 +927,8 @@ Tensor dense_to_sparse_bsr(const Tensor& self, IntArrayRef blocksize) {
       values.scalar_type(),
       c10::kSparseBsr,
       values.device());
+      */
+      return {};
 }
 
 Tensor dense_to_sparse_bsc(const Tensor& self, IntArrayRef blocksize) {
@@ -1237,17 +1240,19 @@ Tensor sparse_compressed_to_flipped(
 }
 
 Tensor sparse_compressed_to_sparse_csr(const Tensor& self) {
+  /*
   if (self.layout() == kSparseCsc) {
     return sparse_compressed_to_flipped(self, c10::nullopt, "to_sparse_csr");
   }
   if (self.layout() == kSparseCsr) {
     return sparse_compressed_clone(self, c10::nullopt, "to_sparse_csr");
   }
+  */
   AT_ERROR(
       "sparse_compressed_to_sparse_csr expected SparseCsr or SparseCsc layout but got ",
       self.layout());
 }
-
+/*
 Tensor coo_to_sparse_csr(const Tensor& self) {
   TORCH_CHECK(
       self.dim() == 2,
@@ -1398,6 +1403,7 @@ TORCH_IMPL_FUNC(_convert_indices_from_csr_to_coo_structured_cpu)
         });
   }
 }
+*/
 
 /*
  * Based on
@@ -1648,6 +1654,7 @@ Tensor sparse_compressed_to_sparse_csc(const Tensor& self) {
 }
 
 Tensor sparse_compressed_to_sparse(const Tensor& self, int64_t sparse_dim) {
+  /*
   TORCH_CHECK(sparse_dim > 0, "sparse_dim must be >0");
   TORCH_CHECK(sparse_dim <= 2,
               "sparse_dim must be less than or equal to 2");
@@ -1668,7 +1675,7 @@ Tensor sparse_compressed_to_sparse(const Tensor& self, int64_t sparse_dim) {
     return at::native::_sparse_coo_tensor_unsafe(
                indices, self.values(), self.sizes())
         ._coalesced_(true);
-  }
+  }*/
   AT_ERROR(
       "sparse_compressed_to_sparse expected SparseCsr or SparseCsc layout but got ",
       self.layout());
