@@ -363,7 +363,7 @@ std::shared_ptr<PointwiseParams> getPointwiseHeuristics(
 
   // Try expanding vectorization to contig merged domains
   auto expanded_vector_word_size =
-      scheduler_utils::expandVectorizationToContigMergedDomains(
+      vectorize_helper::expandVectorizationToContigMergedDomains(
           fusion,
           runtime_info,
           vectorizable_inputs_outputs,
