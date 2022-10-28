@@ -1544,9 +1544,9 @@ void guardFusionGroup(
 
       // note: modified from original implementation, we are guarding fusion
       //       outputs
-      if (input->node()->kind() == prim::Constant) {
-        continue;
-      }
+      //if (input->node()->kind() == prim::Constant) {
+      //  continue;
+      //}
       tensor_inputs_to_check.push_back(input);
       guard_types.push_back(input->type());
     } else if (input->node()->kind() == prim::profile_ivalue) {
