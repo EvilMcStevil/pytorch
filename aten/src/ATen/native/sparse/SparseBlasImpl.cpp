@@ -9,7 +9,7 @@
 #include <ATen/NativeFunctions.h>
 #include <ATen/Operators.h>
 #else
-#include <ATen/ops/_convert_indices_from_csr_to_coo.h>
+//#include <ATen/ops/_convert_indices_from_csr_to_coo.h>
 #include <ATen/ops/empty_like.h>
 #include <ATen/ops/zeros.h>
 #endif
@@ -22,6 +22,8 @@ namespace impl {
 Tensor& _compressed_row_strided_mm_out(const Tensor& compressed, const Tensor& strided, Tensor& result) {
   const auto compressed_layout = compressed.layout();
   const auto compressed_layout_str = at::sparse_csr::layoutToString(compressed_layout);
+  return result;
+  /*
 
   // Device restrictions
   TORCH_CHECK(compressed.device() == strided.device()
@@ -156,9 +158,9 @@ Tensor& _compressed_row_strided_mm_out(const Tensor& compressed, const Tensor& s
     // Zero out and sum over the blocks that share the same row indices.
     result_tiled.zero_();
     result_tiled.index_add_(
-        /*dim=*/-4,
-        /*index=*/compressed_indices_coo,
-        /*source=*/pairwise_block_mm);
+        -4,
+        compressed_indices_coo,
+        pairwise_block_mm);
   }
   // Otherwise accumulate into a buffer and then copy.
   else {
@@ -168,13 +170,14 @@ Tensor& _compressed_row_strided_mm_out(const Tensor& compressed, const Tensor& s
         result_tiled.sizes(),
         result_tiled.options().dtype(mm_dtype));
     promoted_result_tiled.index_add_(
-        /*dim=*/-4,
-        /*index=*/compressed_indices_coo,
-        /*source=*/pairwise_block_mm);
+        -4,
+        compressed_indices_coo,
+        pairwise_block_mm);
     result_tiled.copy_(promoted_result_tiled);
   }
 
   return result;
+  */
 }
 
 Tensor& _compressed_row_strided_addmm_out(

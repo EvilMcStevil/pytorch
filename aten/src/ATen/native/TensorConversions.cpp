@@ -798,6 +798,8 @@ Tensor dense_to_sparse_csr(const Tensor& self) {
   auto n_batch_dim = self.dim() - 2;
   auto values = self;
   auto not_zero_mask = self != 0;
+  return self;
+  /*
 
   if (n_batch_dim > 0) {
     dense_to_sparse_compressed_prepare_check_mask_values_batched(
@@ -809,7 +811,7 @@ Tensor dense_to_sparse_csr(const Tensor& self) {
   std::tie(col_indices, row_indices) = _not_zero_mask_to_col_row_indices(
       not_zero_mask, at::kLong, not_zero_mask.device());
   Tensor crow_indices = at::_convert_indices_from_coo_to_csr(
-      row_indices, not_zero_mask.size(0), false /*out_int32*/);
+      row_indices, not_zero_mask.size(0), false);
   {
     auto mask_indices = _mask_to_indices(not_zero_mask.flatten());
     values = values.flatten().index_select(0, mask_indices);
@@ -827,6 +829,7 @@ Tensor dense_to_sparse_csr(const Tensor& self) {
       values.scalar_type(),
       c10::kSparseCsr,
       values.device());
+  */
 }
 
 Tensor dense_to_sparse_csc(const Tensor& self) {
@@ -834,6 +837,8 @@ Tensor dense_to_sparse_csc(const Tensor& self) {
   auto values = self;
   auto not_zero_mask = self != 0;
 
+  return self;
+  /*
   if (n_batch_dim > 0) {
     dense_to_sparse_compressed_prepare_check_mask_values_batched(
         Layout::SparseCsc, values, not_zero_mask, n_batch_dim);
@@ -845,7 +850,7 @@ Tensor dense_to_sparse_csc(const Tensor& self) {
   std::tie(row_indices, col_indices) = _not_zero_mask_to_col_row_indices(
       not_zero_mask.transpose(1, 0), at::kLong, not_zero_mask.device());
   Tensor ccol_indices = at::_convert_indices_from_coo_to_csr(
-      col_indices, not_zero_mask.size(-1), false /*out_int32*/);
+      col_indices, not_zero_mask.size(-1), false );
   {
     // We need to transpose the mask and values before flattening so the nnz dim
     // will run in col-major order.
@@ -867,6 +872,7 @@ Tensor dense_to_sparse_csc(const Tensor& self) {
       values.scalar_type(),
       c10::kSparseCsc,
       values.device());
+      */
 }
 
 Tensor dense_to_sparse_bsr(const Tensor& self, IntArrayRef blocksize) {
@@ -953,6 +959,9 @@ Tensor dense_to_sparse_bsc(const Tensor& self, IntArrayRef blocksize) {
   auto values = _batch_tile_tensor(self, blocksize);
   auto not_zero_mask = _batch_tile_tensor((self != 0), blocksize);
   auto mask_shape = DimVector(not_zero_mask.sizes().slice(0, n_batch_dim + 2));
+
+  return self;
+  /*
   // Can't use -1 here one of sparse/batch dims may be zero
   mask_shape.push_back(blocksize[0] * blocksize[1]);
   not_zero_mask = not_zero_mask.view(mask_shape).any(-1);
@@ -969,7 +978,7 @@ Tensor dense_to_sparse_bsc(const Tensor& self, IntArrayRef blocksize) {
       not_zero_mask.transpose(1, 0), at::kLong, not_zero_mask.device());
   // This only works if the col_indices vector is in ascending order.
   Tensor ccol_indices = at::_convert_indices_from_coo_to_csr(
-      col_indices, not_zero_mask.size(-1), false /*out_int32*/);
+      col_indices, not_zero_mask.size(-1), false );
   {
     // We need the block-values in col major order, but blocks themselves to
     // remain in row-major order, so we transpose the leading two dims, leaving
@@ -993,6 +1002,7 @@ Tensor dense_to_sparse_bsc(const Tensor& self, IntArrayRef blocksize) {
       values.scalar_type(),
       c10::kSparseBsc,
       values.device());
+  */
 }
 
 void _check_blocksize_matches(
@@ -1042,6 +1052,9 @@ Tensor sparse_compressed_to_flipped(
   const auto layout = self.layout();
   // NOTE: errors on non-compressed sparse layouts.
   const auto flipped_layout = at::sparse_csr::flip_compressed_layout(layout);
+
+  return self;
+  /*
 
   // Suppose compressed_indices represent rows of an input in either
   // CSR or BSR sparse compressed format.
@@ -1175,7 +1188,7 @@ Tensor sparse_compressed_to_flipped(
         compressed_indices_2d,
         plain_indices_2d,
         is_out_int32,
-        /*transpose=*/true); // Flip rows/cols for convenience.
+        true); // Flip rows/cols for convenience.
     // Convert COO indices of (b * r, c) to (r, b * c).
     // It is a map (i, j) -> {
     //    b = i // r
@@ -1237,6 +1250,7 @@ Tensor sparse_compressed_to_flipped(
       new_values.scalar_type(),
       flipped_layout,
       new_values.device());
+      */
 }
 
 Tensor sparse_compressed_to_sparse_csr(const Tensor& self) {

@@ -6364,31 +6364,27 @@
   variants: method
   dispatch:
     CPU, CUDA: dense_to_sparse_csr
-    SparseCPU: coo_to_sparse_csr
     SparseCsrCPU: sparse_compressed_to_sparse_csr
   autogen: to_sparse_csr.out
 
 - func: to_sparse_csc(Tensor self) -> Tensor
   variants: method
   dispatch:
-    CPU, CUDA: dense_to_sparse_csc
-    SparseCPU: coo_to_sparse_csc
+    CPU: dense_to_sparse_csc
     SparseCsrCPU: sparse_compressed_to_sparse_csc
   autogen: to_sparse_csc.out
 
 - func: to_sparse_bsr(Tensor self, int[2] blocksize) -> Tensor
   variants: method
   dispatch:
-    CPU, CUDA: dense_to_sparse_bsr
-    SparseCPU: coo_to_sparse_bsr
+    CPU: dense_to_sparse_bsr
     SparseCsrCPU: sparse_compressed_to_sparse_bsr
   autogen: to_sparse_bsr.out
 
 - func: to_sparse_bsc(Tensor self, int[2] blocksize) -> Tensor
   variants: method
   dispatch:
-    CPU, CUDA: dense_to_sparse_bsc
-    SparseCPU: coo_to_sparse_bsc
+    CPU: dense_to_sparse_bsc
     SparseCsrCPU: sparse_compressed_to_sparse_bsc
   autogen: to_sparse_bsc.out
 
