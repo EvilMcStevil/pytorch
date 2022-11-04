@@ -57,10 +57,10 @@ enum class DebugDumpOption {
   PythonFrontendDebug, //! Python Frontend debug information.
   TransformPropagator, //! When running TransformPropagator, print propagation
                        //! path and replay result
-  InlinePropagator, //! When running InlinePropagator, print propagation
-                    //! path and inlining result
   Cubin, //! Dump compiled CUBIN
-  Ptx //! Dump compiled PTX
+  Ptx, //! Dump compiled PTX
+  BankConflictInfo, //! Dump bank confliction info
+  SyncMap //! RAW dependency info
 };
 
 TORCH_CUDA_CU_API bool isDebugDumpEnabled(DebugDumpOption option);
@@ -71,6 +71,8 @@ TORCH_CUDA_CU_API bool isDebugDumpEnabled(DebugDumpOption option);
 //!
 enum class DisableOption {
   ArchCheck, //! Disable hardware-specific checks to enable cross arch debug
+  CompileToSass, //! Disable direct compilation to sass so the ptx can be
+                 //! examined
   Fallback, //! Disable fallback
   Fma, //! Disable FMA instructions
   IndexHoist, //! Disable index hoisting
@@ -89,7 +91,6 @@ enum class EnableOption {
   KernelProfile, //! Enable intra-kernel performance profiling
   LinearDecomposition, //! Enable linear-bias decomposition
   ConvDecomposition, //! Enable conv-bias decomposition
-  TransposeScheduler //! Enable the experimental transpose scheduler
 };
 
 TORCH_CUDA_CU_API bool isOptionEnabled(EnableOption option);
@@ -172,6 +173,22 @@ constexpr unsigned int switch_pair(T t1, T t2) {
 }
 
 std::vector<int64_t> getTensorSizes(TensorTypePtr const& tensor_type);
+
+//! Return a sorted list of keys of an unordered map so that it can be
+//! iterated deterministically
+template <typename KeyType, typename ValueType, typename Cmp>
+std::vector<KeyType> getSortedKeys(
+    const std::unordered_map<KeyType, ValueType>& map,
+    Cmp cmp) {
+  std::vector<KeyType> keys(map.size());
+  auto keys_it = keys.begin();
+  for (const auto& kv : map) {
+    *keys_it = kv.first;
+    ++keys_it;
+  }
+  std::sort(keys.begin(), keys.end(), cmp);
+  return keys;
+}
 
 } // namespace cuda
 } // namespace fuser

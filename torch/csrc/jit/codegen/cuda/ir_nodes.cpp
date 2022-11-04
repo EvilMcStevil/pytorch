@@ -182,14 +182,57 @@ bool ComplexDouble::sameAs(const Statement* other) const {
   return false;
 }
 
+FullOp::FullOp(
+    IrBuilderPasskey passkey,
+    Val* out,
+    Val* fill_value,
+    DataType dtype)
+    : Expr(passkey, ExprType::FullOp), dtype_(dtype), fill_value_(fill_value) {
+  if (out->isA<TensorView>()) {
+    auto tv_root = out->as<TensorView>()->getRootDomain();
+    for (auto id : tv_root) {
+      addInput(id->extent());
+    }
+  }
+  addInput(fill_value);
+  addOutput(out);
+}
+
+FullOp::FullOp(const FullOp* src, IrCloner* ir_cloner)
+    : Expr(src, ir_cloner),
+      dtype_(src->dtype()),
+      fill_value_(ir_cloner->clone(src->fill_value_)) {}
+
+Expr* FullOp::shallowCopy() const {
+  auto result = IrBuilder::create<FullOp>(output(0), fill_value_, dtype_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
+bool FullOp::sameAs(const Statement* other) const {
+  if (this == other) {
+    return true;
+  }
+  if (!other->isA<FullOp>()) {
+    return false;
+  }
+  const auto other_op = other->as<FullOp>();
+  if (dtype_ != other_op->dtype_) {
+    return false;
+  }
+  return Expr::sameAs(other);
+}
+
 ARangeOp::ARangeOp(
     IrBuilderPasskey passkey,
     Val* out,
     Val* start,
     Val* end,
     Val* step,
+    DataType dtype,
     Val* linear_index)
     : Expr(passkey, ExprType::ARangeOp),
+      dtype_(dtype),
       start_(start),
       end_(end),
       step_(step),
@@ -202,10 +245,18 @@ ARangeOp::ARangeOp(
 
 ARangeOp::ARangeOp(const ARangeOp* src, IrCloner* ir_cloner)
     : Expr(src, ir_cloner),
+      dtype_(src->dtype()),
       start_(ir_cloner->clone(src->start_)),
       end_(ir_cloner->clone(src->end_)),
       step_(ir_cloner->clone(src->step_)),
       linear_index_(ir_cloner->clone(src->linear_index_)) {}
+
+Expr* ARangeOp::shallowCopy() const {
+  auto result = IrBuilder::create<ARangeOp>(
+      output(0), start_, end_, step_, dtype_, linear_index_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
 
 bool ARangeOp::sameAs(const Statement* other) const {
   if (this == other) {
@@ -215,6 +266,9 @@ bool ARangeOp::sameAs(const Statement* other) const {
     return false;
   }
   const auto other_op = other->as<ARangeOp>();
+  if (dtype_ != other_op->dtype_) {
+    return false;
+  }
   if (!start_->sameAs(other_op->start_)) {
     return false;
   }
@@ -229,6 +283,64 @@ bool ARangeOp::sameAs(const Statement* other) const {
   }
   if ((linear_index_ != nullptr) &&
       !linear_index_->sameAs(other_op->linear_index_)) {
+    return false;
+  }
+  return Expr::sameAs(other);
+}
+
+EyeOp::EyeOp(
+    IrBuilderPasskey passkey,
+    Val* out,
+    DataType dtype,
+    Val* index1,
+    Val* index2)
+    : Expr(passkey, ExprType::EyeOp),
+      dtype_(dtype),
+      index1_(index1),
+      index2_(index2) {
+  if (out->isA<TensorView>()) {
+    addInput(out->as<TensorView>()->getRootDomain()[0]->extent());
+    if (out->as<TensorView>()->getRootDomain()[1] !=
+        out->as<TensorView>()->getRootDomain()[0]) {
+      addInput(out->as<TensorView>()->getRootDomain()[1]->extent());
+    }
+  }
+  addOutput(out);
+}
+
+EyeOp::EyeOp(const EyeOp* src, IrCloner* ir_cloner)
+    : Expr(src, ir_cloner),
+      dtype_(src->dtype_),
+      index1_(ir_cloner->clone(src->index1_)),
+      index2_(ir_cloner->clone(src->index2_)) {}
+
+Expr* EyeOp::shallowCopy() const {
+  auto result = IrBuilder::create<EyeOp>(output(0), dtype_, index1_, index2_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
+bool EyeOp::sameAs(const Statement* other) const {
+  if (this == other) {
+    return true;
+  }
+  if (!other->isA<EyeOp>()) {
+    return false;
+  }
+  const auto other_op = other->as<EyeOp>();
+  if (dtype_ != other_op->dtype_) {
+    return false;
+  }
+  if ((index1_ == nullptr) != (other_op->index1_ == nullptr)) {
+    return false;
+  }
+  if ((index2_ == nullptr) != (other_op->index2_ == nullptr)) {
+    return false;
+  }
+  if ((index1_ != nullptr) && !index1_->sameAs(other_op->index1_)) {
+    return false;
+  }
+  if ((index2_ != nullptr) && !index2_->sameAs(other_op->index2_)) {
     return false;
   }
   return Expr::sameAs(other);
@@ -254,6 +366,12 @@ UnaryOp::UnaryOp(const UnaryOp* src, IrCloner* ir_cloner)
       out_(ir_cloner->clone(src->out_)),
       in_(ir_cloner->clone(src->in_)) {}
 
+Expr* UnaryOp::shallowCopy() const {
+  auto result = IrBuilder::create<UnaryOp>(unary_op_type_, out_, in_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 bool UnaryOp::sameAs(const Statement* other) const {
   if (this == other) {
     return true;
@@ -262,8 +380,9 @@ bool UnaryOp::sameAs(const Statement* other) const {
     return false;
   }
   const auto other_op = other->as<UnaryOp>();
-  if (getUnaryOpType() != other_op->getUnaryOpType())
+  if (getUnaryOpType() != other_op->getUnaryOpType()) {
     return false;
+  }
   return Expr::sameAs(other);
 }
 
@@ -290,6 +409,12 @@ BinaryOp::BinaryOp(const BinaryOp* src, IrCloner* ir_cloner)
       lhs_(ir_cloner->clone(src->lhs_)),
       rhs_(ir_cloner->clone(src->rhs_)) {}
 
+Expr* BinaryOp::shallowCopy() const {
+  auto result = IrBuilder::create<BinaryOp>(binary_op_type_, out_, lhs_, rhs_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 bool BinaryOp::sameAs(const Statement* other) const {
   if (this == other) {
     return true;
@@ -298,8 +423,9 @@ bool BinaryOp::sameAs(const Statement* other) const {
     return false;
   }
   const auto other_op = other->as<BinaryOp>();
-  if (getBinaryOpType() != other_op->getBinaryOpType())
+  if (getBinaryOpType() != other_op->getBinaryOpType()) {
     return false;
+  }
   return Expr::sameAs(other);
 }
 
@@ -330,6 +456,13 @@ TernaryOp::TernaryOp(const TernaryOp* src, IrCloner* ir_cloner)
       in2_(ir_cloner->clone(src->in2_)),
       in3_(ir_cloner->clone(src->in3_)) {}
 
+Expr* TernaryOp::shallowCopy() const {
+  auto result =
+      IrBuilder::create<TernaryOp>(ternary_op_type_, out_, in1_, in2_, in3_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 bool TernaryOp::sameAs(const Statement* other) const {
   if (this == other) {
     return true;
@@ -338,8 +471,9 @@ bool TernaryOp::sameAs(const Statement* other) const {
     return false;
   }
   const auto other_op = other->as<TernaryOp>();
-  if (getTernaryOpType() != other_op->getTernaryOpType())
+  if (getTernaryOpType() != other_op->getTernaryOpType()) {
     return false;
+  }
   return Expr::sameAs(other);
 }
 
@@ -347,16 +481,26 @@ RNGOp::RNGOp(
     IrBuilderPasskey passkey,
     RNGOpType type,
     Val* out,
+    DataType dtype,
+    std::vector<Val*> parameters,
     int rng_offset,
     Val* philox_index)
     : Expr(passkey, ExprType::RNGOp),
       rng_op_type_(type),
+      dtype_(dtype),
+      parameters_(std::move(parameters)),
       rng_offset_(rng_offset),
       philox_index_(philox_index) {
   if (out->isA<TensorView>()) {
     for (auto id : out->as<TensorView>()->getRootDomain()) {
-      addInput(id->extent());
+      shape_.emplace_back(id->extent());
     }
+  }
+  for (auto v : shape_) {
+    addInput(v);
+  }
+  for (auto v : parameters_) {
+    addInput(v);
   }
   addOutput(out);
 }
@@ -364,8 +508,17 @@ RNGOp::RNGOp(
 RNGOp::RNGOp(const RNGOp* src, IrCloner* ir_cloner)
     : Expr(src, ir_cloner),
       rng_op_type_(src->rng_op_type_),
+      dtype_(src->dtype()),
+      parameters_(ir_cloner->clone(src->parameters_)),
       rng_offset_(src->rng_offset_),
       philox_index_(ir_cloner->clone(src->philox_index_)) {}
+
+Expr* RNGOp::shallowCopy() const {
+  auto result = IrBuilder::create<RNGOp>(
+      rng_op_type_, output(0), dtype_, parameters_, rng_offset_, philox_index_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
 
 bool RNGOp::sameAs(const Statement* other) const {
   if (this == other) {
@@ -377,6 +530,17 @@ bool RNGOp::sameAs(const Statement* other) const {
   const auto other_op = other->as<RNGOp>();
   if (getRNGOpType() != other_op->getRNGOpType()) {
     return false;
+  }
+  if (dtype_ != other_op->dtype_) {
+    return false;
+  }
+  if (parameters_.size() != other_op->parameters_.size()) {
+    return false;
+  }
+  for (auto i : c10::irange(parameters_.size())) {
+    if (!parameters_[i]->sameAs(other_op->parameters_[i])) {
+      return false;
+    }
   }
   if (getRNGOffset() != other_op->getRNGOffset()) {
     return false;
@@ -400,10 +564,6 @@ BroadcastOp::BroadcastOp(
       out_(out),
       in_(in),
       is_broadcast_dims_(std::move(is_broadcast_dims)) {
-  // clang-tidy complains about out_ that it may be null.
-  TORCH_INTERNAL_ASSERT(out_ != nullptr);
-  TORCH_INTERNAL_ASSERT(in_ != nullptr);
-
   auto out_type = out->getValType().value();
   auto in_type = in->getValType().value();
 
@@ -419,46 +579,39 @@ BroadcastOp::BroadcastOp(
     return;
   }
 
-  passkey.ir_container_->registerExpr(exprPasskey(), this);
+  auto in_tv = in->as<TensorView>();
+  auto out_tv = out->as<TensorView>();
+  auto in_dom = TensorDomain::noReductions(in_tv->getMaybeRFactorDomain());
+  auto& out_dom = out_tv->getRootDomain();
+  TORCH_INTERNAL_ASSERT(
+      is_broadcast_dims_.size() == out_dom.size(),
+      "The dimensions of output tensor and does not match with is_broadcast_dims");
 
-  // This is a generic check that root dims of a consumer and producer match.
-  // Maybe we shouldn't relegate it to this constructor.
-  const auto c_tv = out_->as<TensorView>();
-  const auto p_tv = in_->as<TensorView>();
-
-  const auto& c_root = c_tv->getRootDomain();
-  const auto& p_root = p_tv->getMaybeRFactorDomain();
-
-  const auto root_p2c =
-      PairwiseRootDomainMap(p_tv, c_tv)
-          .mapProducerToConsumer(p_tv->domain(), c_tv->domain());
-
-  for (auto id : p_root) {
-    if (root_p2c.find(id) == root_p2c.end()) {
+  auto out_size = is_broadcast_dims_.size();
+  auto num_new_broadcasts = 0;
+  for (const auto i : c10::irange(out_size)) {
+    if (is_broadcast_dims_[i]) {
+      num_new_broadcasts++;
+      auto id = out_dom[i];
       TORCH_INTERNAL_ASSERT(
-          id->isReduction() || id->isStride(),
-          "Invalid broadcast op: ",
-          id,
-          ". Non-reduction input dim does't match to output.");
+          id->isBroadcast(),
+          "New broadcast dimension does not properly set its IterType.");
+      TORCH_INTERNAL_ASSERT(
+          !id->hasExpandedExtent(),
+          "New broadcast dimension can not be expanded.");
+      TORCH_INTERNAL_ASSERT(
+          id->extent()->isOneInt(),
+          "New broadcast dimension must have extent 1");
+    } else {
+      auto in_id = in_dom[i - num_new_broadcasts];
+      auto out_id = out_dom[i];
+      TORCH_INTERNAL_ASSERT(
+          in_id->sameAs(out_id), "IterDomain does not match in BroadcastOp");
     }
   }
-
-  std::unordered_set<IterDomain*> c_mapped;
-  for (auto pair_entry : root_p2c) {
-    c_mapped.insert(pair_entry.second);
-  }
-
-  for (const auto i : c10::irange(c_root.size())) {
-    const auto c_id = c_root[i];
-    if (c_mapped.find(c_id) != c_mapped.end()) {
-      continue;
-    }
-    TORCH_INTERNAL_ASSERT(
-        c_id->isBroadcast() && is_broadcast_dims_[i],
-        "Invalid broadcast op: ",
-        c_id,
-        ". Non-broadcasted output dim isn't matched from input.");
-  }
+  TORCH_INTERNAL_ASSERT(
+      out_size == in_dom.size() + num_new_broadcasts,
+      "The dimensions of output tensor and does not match with is_broadcast_dims and input tensor");
 }
 
 BroadcastOp::BroadcastOp(const BroadcastOp* src, IrCloner* ir_cloner)
@@ -466,6 +619,12 @@ BroadcastOp::BroadcastOp(const BroadcastOp* src, IrCloner* ir_cloner)
       out_(ir_cloner->clone(src->out_)),
       in_(ir_cloner->clone(src->in_)),
       is_broadcast_dims_(src->is_broadcast_dims_) {}
+
+Expr* BroadcastOp::shallowCopy() const {
+  auto result = IrBuilder::create<BroadcastOp>(out_, in_, is_broadcast_dims_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
 
 bool BroadcastOp::sameAs(const Statement* other) const {
   if (this == other) {
@@ -476,6 +635,89 @@ bool BroadcastOp::sameAs(const Statement* other) const {
   }
   const auto other_op = other->as<BroadcastOp>();
   if (getBroadcastDimFlags() != other_op->getBroadcastDimFlags()) {
+    return false;
+  }
+  return Expr::sameAs(other);
+}
+
+SqueezeOp::SqueezeOp(
+    IrBuilderPasskey passkey,
+    Val* out,
+    Val* in,
+    std::vector<bool> is_squeeze_dims)
+    : Expr(passkey, ExprType::SqueezeOp),
+      out_(out),
+      in_(in),
+      is_squeeze_dims_(std::move(is_squeeze_dims)) {
+  auto out_type = out->getValType().value();
+  auto in_type = in->getValType().value();
+
+  TORCH_INTERNAL_ASSERT(
+      (out_type == ValType::TensorView && in_type == ValType::TensorView) ||
+          (out_type == ValType::TensorIndex && in_type == ValType::TensorIndex),
+      "Cannot squeeze a non-tensor object.");
+
+  addOutput(out);
+  addInput(in);
+
+  if (!out->isA<TensorView>() || !in->isA<TensorView>()) {
+    return;
+  }
+
+  auto in_tv = in->as<TensorView>();
+  auto out_tv = out->as<TensorView>();
+  auto in_dom = TensorDomain::noReductions(in_tv->getMaybeRFactorDomain());
+  auto& out_dom = out_tv->getRootDomain();
+  TORCH_INTERNAL_ASSERT(
+      is_squeeze_dims_.size() == in_dom.size(),
+      "The dimensions of input tensor and does not match with is_squeeze_dims");
+
+  auto in_size = is_squeeze_dims_.size();
+  auto num_removed_broadcasts = 0;
+  for (const auto i : c10::irange(is_squeeze_dims_.size())) {
+    if (is_squeeze_dims_[i]) {
+      num_removed_broadcasts++;
+      auto id = in_dom[i];
+      TORCH_INTERNAL_ASSERT(
+          id->isBroadcast(), "Can not squeeze non-broadcasting dimension(s).");
+      TORCH_INTERNAL_ASSERT(
+          !id->hasExpandedExtent(), "Can not squeeze expanded dimension(s).");
+      TORCH_INTERNAL_ASSERT(
+          id->extent()->isOneInt(),
+          "Can not squeeze dimension(s) with size != 1.");
+    } else {
+      auto in_id = in_dom[i];
+      auto out_id = out_dom[i - num_removed_broadcasts];
+      TORCH_INTERNAL_ASSERT(
+          in_id->sameAs(out_id), "IterDomain does not match in BroadcastOp");
+    }
+  }
+  TORCH_INTERNAL_ASSERT(
+      in_size == out_tv->nDims() + num_removed_broadcasts,
+      "The dimensions of output tensor and does not match with is_squeeze_dims and input tensor");
+}
+
+SqueezeOp::SqueezeOp(const SqueezeOp* src, IrCloner* ir_cloner)
+    : Expr(src, ir_cloner),
+      out_(ir_cloner->clone(src->out_)),
+      in_(ir_cloner->clone(src->in_)),
+      is_squeeze_dims_(src->is_squeeze_dims_) {}
+
+Expr* SqueezeOp::shallowCopy() const {
+  auto result = IrBuilder::create<SqueezeOp>(out_, in_, is_squeeze_dims_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
+bool SqueezeOp::sameAs(const Statement* other) const {
+  if (this == other) {
+    return true;
+  }
+  if (!other->isA<SqueezeOp>()) {
+    return false;
+  }
+  const auto other_op = other->as<SqueezeOp>();
+  if (getSqueezeDimFlags() != other_op->getSqueezeDimFlags()) {
     return false;
   }
   return Expr::sameAs(other);
@@ -521,6 +763,36 @@ ReductionOp::ReductionOp(
   addInput(in);
 }
 
+ReductionOp::ReductionOp(const ReductionOp* src, IrCloner* ir_cloner)
+    : Expr(src, ir_cloner),
+      reduction_op_type_(src->reduction_op_type_),
+      init_(ir_cloner->clone(src->init_)),
+      out_(ir_cloner->clone(src->out_)),
+      in_(ir_cloner->clone(src->in_)),
+      is_allreduce_(src->is_allreduce_) {}
+
+Expr* ReductionOp::shallowCopy() const {
+  auto result = IrBuilder::create<ReductionOp>(
+      reduction_op_type_, init_, out_, in_, is_allreduce_, etype());
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
+bool ReductionOp::sameAs(const Statement* other) const {
+  if (this == other) {
+    return true;
+  }
+  if (!other->isA<ReductionOp>()) {
+    return false;
+  }
+  const auto other_op = other->as<ReductionOp>();
+  // Note that init is not part of input vals, so it must be checked separately.
+  return (
+      Expr::sameAs(other) &&
+      getReductionOpType() == other_op->getReductionOpType() &&
+      init()->sameAs(other_op->init()));
+}
+
 GroupedReductionOp::GroupedReductionOp(
     IrBuilderPasskey passkey,
     std::vector<BinaryOpType> reduction_op_types,
@@ -549,6 +821,18 @@ GroupedReductionOp::GroupedReductionOp(
       reduction_op_types_(src->reduction_op_types_),
       init_vals_(ir_cloner->clone(src->init_vals_)),
       is_allreduce_(src->is_allreduce_) {}
+
+Expr* GroupedReductionOp::shallowCopy() const {
+  auto result = IrBuilder::create<GroupedReductionOp>(
+      reduction_op_types_,
+      init_vals_,
+      outputs(),
+      inputs(),
+      is_allreduce_,
+      etype());
+  result->copyPredicatesFrom(this);
+  return result;
+}
 
 int GroupedReductionOp::getExprIndexOfOutput(Val* output_val) const {
   auto it = std::find(outputs().begin(), outputs().end(), output_val);
@@ -724,6 +1008,13 @@ WelfordOp::WelfordOp(const WelfordOp* src, IrCloner* ir_cloner)
       init_(src->init_.clone(ir_cloner)),
       is_allreduce_(src->is_allreduce_) {}
 
+Expr* WelfordOp::shallowCopy() const {
+  auto result =
+      IrBuilder::create<WelfordOp>(output_, input_, init_, is_allreduce_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 Val* WelfordOp::getInitValOfOutput(Val* output_val) const {
   auto val_name = output().getNameOf(output_val);
 
@@ -873,6 +1164,13 @@ GroupedWelfordOp::GroupedWelfordOp(
       init_vals_(WelfordTriplet::clone(src->init_vals_, ir_cloner)),
       is_allreduce_(src->is_allreduce_) {}
 
+Expr* GroupedWelfordOp::shallowCopy() const {
+  auto result = IrBuilder::create<GroupedWelfordOp>(
+      output_vals_, input_vals_, init_vals_, is_allreduce_, etype());
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 bool GroupedWelfordOp::sameAs(const Statement* other) const {
   if (this == other) {
     return true;
@@ -967,6 +1265,13 @@ MmaOp::MmaOp(const MmaOp* src, IrCloner* ir_cloner)
       init_(ir_cloner->clone(src->init_)),
       options_(src->options_) {}
 
+Expr* MmaOp::shallowCopy() const {
+  auto result = IrBuilder::create<MmaOp>(out_, in_a_, in_b_, init_);
+  result->options_ = options_;
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 bool MmaOp::sameAs(const Statement* other) const {
   if (this == other) {
     return true;
@@ -977,29 +1282,6 @@ bool MmaOp::sameAs(const Statement* other) const {
         options_ == other_mma->options_;
   }
   return false;
-}
-
-ReductionOp::ReductionOp(const ReductionOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      reduction_op_type_(src->reduction_op_type_),
-      init_(ir_cloner->clone(src->init_)),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)),
-      is_allreduce_(src->is_allreduce_) {}
-
-bool ReductionOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<ReductionOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<ReductionOp>();
-  // Note that init is not part of input vals, so it must be checked separately.
-  return (
-      Expr::sameAs(other) &&
-      getReductionOpType() == other_op->getReductionOpType() &&
-      init()->sameAs(other_op->init()));
 }
 
 TransposeOp::TransposeOp(
@@ -1046,6 +1328,12 @@ TransposeOp::TransposeOp(const TransposeOp* src, IrCloner* ir_cloner)
       in_(ir_cloner->clone(src->in_)),
       new2old_(src->new2old_) {}
 
+Expr* TransposeOp::shallowCopy() const {
+  auto result = IrBuilder::create<TransposeOp>(out_, in_, new2old_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 std::vector<int64_t> TransposeOp::old2new() const {
   std::vector<int64_t> old2new(new2old_.size());
   for (auto new_axis : c10::irange(new2old_.size())) {
@@ -1083,6 +1371,12 @@ ExpandOp::ExpandOp(const ExpandOp* src, IrCloner* ir_cloner)
   for (const auto expanded_extent : src->expanded_extents_) {
     expanded_extents_.push_back(ir_cloner->clone(expanded_extent));
   }
+}
+
+Expr* ExpandOp::shallowCopy() const {
+  auto result = IrBuilder::create<ExpandOp>(out_, in_, expanded_extents_);
+  result->copyPredicatesFrom(this);
+  return result;
 }
 
 ShiftOp::ShiftOp(
@@ -1131,6 +1425,12 @@ ShiftOp::ShiftOp(const ShiftOp* src, IrCloner* ir_cloner)
       in_(ir_cloner->clone(src->in_)),
       offsets_(src->offsets_),
       pad_width_(src->pad_width_) {}
+
+Expr* ShiftOp::shallowCopy() const {
+  auto result = IrBuilder::create<ShiftOp>(out_, in_, offsets_, pad_width_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
 
 bool ShiftOp::sameAs(const Statement* other) const {
   if (this == other) {
@@ -1194,6 +1494,13 @@ GatherOp::GatherOp(const GatherOp* src, IrCloner* ir_cloner)
       window_shape_(src->window_shape_),
       pad_width_(src->pad_width_) {}
 
+Expr* GatherOp::shallowCopy() const {
+  auto result =
+      IrBuilder::create<GatherOp>(out_, in_, window_shape_, pad_width_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 bool GatherOp::sameAs(const Statement* other) const {
   if (this == other) {
     return true;
@@ -1240,6 +1547,12 @@ ViewAsScalar::ViewAsScalar(const ViewAsScalar* src, IrCloner* ir_cloner)
       vector_id_(ir_cloner->clone(src->vector_id_)),
       index_(ir_cloner->clone(src->index_)) {}
 
+Expr* ViewAsScalar::shallowCopy() const {
+  auto result = IrBuilder::create<ViewAsScalar>(out_, in_, vector_id_, index_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 ViewOp::ViewOp(IrBuilderPasskey passkey, TensorView* out, TensorView* in)
     : Expr(passkey, ExprType::ViewOp), out_(out), in_(in) {
   addOutput(out);
@@ -1250,6 +1563,12 @@ ViewOp::ViewOp(const ViewOp* src, IrCloner* ir_cloner)
     : Expr(src, ir_cloner),
       out_(ir_cloner->clone(src->out_)),
       in_(ir_cloner->clone(src->in_)) {}
+
+Expr* ViewOp::shallowCopy() const {
+  auto result = IrBuilder::create<ViewOp>(out_, in_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
 
 LoadStoreOp::LoadStoreOp(
     IrBuilderPasskey passkey,
@@ -1269,6 +1588,12 @@ LoadStoreOp::LoadStoreOp(const LoadStoreOp* src, IrCloner* ir_cloner)
       load_store_type_(src->load_store_type_),
       out_(ir_cloner->clone(src->out_)),
       in_(ir_cloner->clone(src->in_)) {}
+
+Expr* LoadStoreOp::shallowCopy() const {
+  auto result = IrBuilder::create<LoadStoreOp>(load_store_type_, out_, in_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
 
 IterDomainBuilder::IterDomainBuilder(Val* _start, Val* _extent)
     : start_(_start), extent_(_extent) {
@@ -1491,10 +1816,12 @@ IterDomain* IterDomain::merge(IterDomain* outer, IterDomain* inner) {
       !outer->extent()->isZeroInt() && !inner->extent()->isZeroInt(),
       "Merging IterDomains with ending values that are 0 is not supported at this time.");
   TORCH_CHECK(
-      outer->isReduction() == inner->isReduction() ||
-          (!outer->isReduction() && inner->isTrivialReduction()) ||
-          (outer->isTrivialReduction() && !inner->isReduction()),
-      "Merging IterDomains requires that their iteration types match.");
+      outer->isReduction() == inner->isReduction(),
+      "Merging IterDomains requires that their iteration types match. ",
+      "Outer: ",
+      outer->toString(),
+      ", Inner: ",
+      inner->toString());
   TORCH_CHECK(
       (outer->isGather() && inner->isGather()) ||
           (!outer->isGather() && !inner->isGather()),
@@ -1516,21 +1843,6 @@ IterDomain* IterDomain::merge(IterDomain* outer, IterDomain* inner) {
       (outer->getIterType() == IterType::Iteration ||
        inner->getIterType() == IterType::Iteration)) {
     itype = IterType::Iteration;
-  }
-
-  // Merging trivial reduction with iter domain, that's fine, just make it an
-  // iter domain.
-  if ((outer->isTrivialReduction() || inner->isTrivialReduction()) &&
-      (outer->getIterType() == IterType::Iteration ||
-       inner->getIterType() == IterType::Iteration)) {
-    itype = IterType::Iteration;
-  }
-
-  // Merging trivial reduction with broadcasting, that's fine, just make it a
-  // broadcasting.
-  if ((outer->isTrivialReduction() || inner->isTrivialReduction()) &&
-      (outer->isBroadcast() || inner->isBroadcast())) {
-    itype = IterType::Broadcast;
   }
 
   Val* expanded_extent = nullptr;
@@ -1781,7 +2093,7 @@ TensorDomain::TensorDomain(
       root_domain_.size());
 
   // Just due to clang-tidy, correct value set in resetDomains
-  has_nontrivial_reduction_ = false;
+  has_reduction_ = false;
   domain_ = root_domain_;
   resetDomains();
 }
@@ -1820,7 +2132,7 @@ TensorDomain::TensorDomain(
   });
 
   // Just due to clang-tidy, correct value set in resetDomains
-  has_nontrivial_reduction_ = false;
+  has_reduction_ = false;
   resetDomains();
 }
 
@@ -1870,7 +2182,7 @@ TensorDomain::TensorDomain(
   });
 
   // Just due to clang-tidy, correct value set in resetDomains
-  has_nontrivial_reduction_ = false;
+  has_reduction_ = false;
   resetDomains();
 }
 
@@ -1882,7 +2194,7 @@ TensorDomain::TensorDomain(const TensorDomain* src, IrCloner* ir_cloner)
       no_reduction_domain_(ir_cloner->clone(src->no_reduction_domain_)),
       rfactor_domain_(ir_cloner->clone(src->rfactor_domain_)),
       contiguity_(src->contiguity()),
-      has_nontrivial_reduction_(src->has_nontrivial_reduction_) {}
+      has_reduction_(src->has_reduction_) {}
 
 bool TensorDomain::hasBlockBroadcast() const {
   return std::any_of(domain_.begin(), domain_.end(), [](IterDomain* id) {
@@ -1970,7 +2282,7 @@ void TensorDomain::setContiguity(const std::vector<bool>& contig) {
 }
 
 bool TensorDomain::hasReduction() const {
-  return has_nontrivial_reduction_;
+  return has_reduction_;
 }
 
 bool TensorDomain::hasBlockReduction() const {
@@ -2005,7 +2317,7 @@ bool TensorDomain::hasViewLikeRFactor() const {
       getMaybeRFactorDomain().begin(),
       getMaybeRFactorDomain().end(),
       [](IterDomain* id) {
-        return id->isReduction() && id->isRFactorProduct();
+        return (id->isReduction() || id->isStride()) && id->isRFactorProduct();
       });
 }
 
@@ -2237,6 +2549,21 @@ std::vector<IterDomain*> TensorDomain::noBroadcasts(
   return noBroadcastDomain;
 }
 
+std::vector<bool> TensorDomain::getContiguousContiguity(
+    const std::vector<IterDomain*>& rfactor_domain) {
+  // The expanded dim and the dim before it can not be contiguous
+  std::vector<bool> contiguity(rfactor_domain.size(), true);
+  for (auto i : c10::irange(rfactor_domain.size())) {
+    if (rfactor_domain[i]->hasExpandedExtent()) {
+      contiguity[i] = false;
+      if (i > 0) {
+        contiguity[i - 1] = false;
+      }
+    }
+  }
+  return contiguity;
+}
+
 bool TensorDomain::hasBroadcast(const std::vector<IterDomain*>& td) {
   for (auto id : td)
     if (id->isBroadcast())
@@ -2245,15 +2572,8 @@ bool TensorDomain::hasBroadcast(const std::vector<IterDomain*>& td) {
 }
 
 bool TensorDomain::hasReduction(const std::vector<IterDomain*>& td) {
-  for (auto id : td)
-    if (id->isReduction())
-      return true;
-  return false;
-}
-
-bool TensorDomain::hasNontrivialReduction(const std::vector<IterDomain*>& td) {
   for (auto id : td) {
-    if (id->isReduction() && !id->isTrivialReduction()) {
+    if (id->isReduction()) {
       return true;
     }
   }
@@ -2328,7 +2648,7 @@ TensorDomain* TensorDomain::flatten(int64_t start_dim, int64_t end_dim) {
       new_root_domain,
       rfactor_domain,
       rfactor_domain,
-      std::vector<bool>(rfactor_domain.size(), true));
+      TensorDomain::getContiguousContiguity(rfactor_domain));
 }
 
 // TODO: Rfactor a Welford
@@ -2380,6 +2700,13 @@ Split::Split(const Split* src, IrCloner* ir_cloner)
       start_offset_(ir_cloner->clone(src->start_offset_)),
       stop_offset_(ir_cloner->clone(src->stop_offset_)) {}
 
+Expr* Split::shallowCopy() const {
+  auto result = IrBuilder::create<Split>(
+      outer_, inner_, in_, factor_, inner_split_, start_offset_, stop_offset_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 Val* Split::extent(Val* in_extent, Val* start_offset, Val* stop_offset) {
   TORCH_INTERNAL_ASSERT(in_extent != nullptr);
 
@@ -2425,6 +2752,12 @@ Merge::Merge(const Merge* src, IrCloner* ir_cloner)
       outer_(ir_cloner->clone(src->outer_)),
       inner_(ir_cloner->clone(src->inner_)) {}
 
+Expr* Merge::shallowCopy() const {
+  auto result = IrBuilder::create<Merge>(out_, outer_, inner_);
+  result->copyPredicatesFrom(this);
+  return result;
+}
+
 bool Merge::sameAs(const Statement* other) const {
   if (this == other) {
     return true;
@@ -2454,6 +2787,13 @@ Swizzle2D::Swizzle2D(
   addOutput(out_y);
   addInput(in_x);
   addInput(in_y);
+}
+
+Expr* Swizzle2D::shallowCopy() const {
+  auto result = IrBuilder::create<Swizzle2D>(
+      out_x_, out_y_, in_x_, in_y_, swizzle_type_, swizzle_mode_);
+  result->copyPredicatesFrom(this);
+  return result;
 }
 
 bool Swizzle2D::sameAs(const Statement* other) const {

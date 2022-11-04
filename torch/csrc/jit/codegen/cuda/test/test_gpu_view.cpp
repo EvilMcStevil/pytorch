@@ -10,6 +10,7 @@
 #include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/fusion_segmenter.h>
+#include <torch/csrc/jit/codegen/cuda/inlining.h>
 #include <torch/csrc/jit/codegen/cuda/interface.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_builder.h>
@@ -18,10 +19,10 @@
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_cache.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir_dispatch.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
+#include <torch/csrc/jit/codegen/cuda/lower_divisible_split.h>
 #include <torch/csrc/jit/codegen/cuda/mutator.h>
 #include <torch/csrc/jit/codegen/cuda/ops/all_ops.h>
 #include <torch/csrc/jit/codegen/cuda/root_domain_map.h>
@@ -1339,6 +1340,901 @@ TEST_F(NVFuserTest, FusionReductionFlatten1_CUDA) {
 
   testValidate(
       executor_cache.fusion(), cg_outputs, {t0}, {ref}, __LINE__, __FILE__);
+}
+
+TEST_F(NVFuserTest, FusionPwiseViewSchedule_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  int x = 31, y = 65, z = 103;
+
+  auto tv0 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv0);
+
+  auto tv1 = sin(tv0);
+
+  auto tv2 = view(tv1, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv2);
+
+  auto tv3 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv3);
+
+  auto tv4 = view(tv3, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv4);
+
+  // Link 0 and 3 together for view analysis done based on before the views
+  // actually happened.
+  auto tv5 = add(tv0, tv3);
+  fusion.addOutput(tv5);
+
+  {
+    TransformPropagator propagator(tv4);
+    MaxRootDomainInfoSpanningTree(tv4).traverse(&propagator);
+  }
+
+  for (auto i : c10::irange(tv5->nDims() - 1)) {
+    tv5->merge(0);
+  }
+  tv5->split(0, 32);
+  tv5->split(0, 4);
+  tv5->axis(0)->parallelize(ParallelType::BIDx);
+  tv5->axis(1)->parallelize(ParallelType::Unroll);
+  tv5->axis(2)->parallelize(ParallelType::TIDx);
+
+  {
+    TransformPropagator propagator(tv5);
+    MaxRootDomainInfoSpanningTree spanning_tree(tv5);
+    spanning_tree.traverse(&propagator);
+    scheduler_utils::parallelizeAllLike(tv5);
+
+    // Inline the schedule
+    inlineMost();
+  }
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({x, y, z}, options);
+  at::Tensor t3 = at::randn({x, y, z}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {x, y * z});
+  auto t4 = at::native::view(t3, {x, y * z});
+  auto t5 = t0 + t3;
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, {t0, t3});
+  auto cg_outputs = fe.runFusion({t0, t3});
+
+  testValidate(&fusion, cg_outputs, {t0, t3}, {t2, t4, t5}, __LINE__, __FILE__);
+}
+
+TEST_F(NVFuserTest, FusionSumViewSchedule_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  int x = 31, y = 65, z = 103;
+
+  auto tv0 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv0);
+
+  auto tv1 = sin(tv0);
+
+  auto tv2 = view(tv1, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv2);
+
+  auto tv3 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv3);
+
+  auto tv4 = view(tv3, {x, y, z}, {x, y * z});
+  auto tv5 = sum(tv4, {1});
+  fusion.addOutput(tv5);
+
+  // Link 0 and 3 together for view analysis done based on before the views
+  // actually happened.
+  auto tv6 = add(tv0, tv3);
+  fusion.addOutput(tv6);
+
+  {
+    TransformPropagator propagator(tv4);
+    MaxRootDomainInfoSpanningTree(tv4).traverse(&propagator);
+  }
+
+  tv5->split(1, 128);
+  tv5->split(1, 4);
+
+  auto tv5_rf = tv5->rFactor({1, 2});
+  tv5_rf->axis(0)->parallelize(ParallelType::BIDx);
+  tv5_rf->axis(2)->parallelize(ParallelType::Unroll);
+  tv5_rf->axis(3)->parallelize(ParallelType::TIDx);
+
+  {
+    TransformPropagator propagator(tv5_rf);
+    MaxRootDomainInfoSpanningTree spanning_tree(tv5_rf);
+    spanning_tree.traverse(&propagator);
+    scheduler_utils::parallelizeAllLike(tv5_rf);
+
+    // Inline the schedule
+    inlineMost();
+  }
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({x, y, z}, options);
+  at::Tensor t3 = at::randn({x, y, z}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {x, y * z});
+  auto t4 = at::native::view(t3, {x, y * z});
+  auto t5 = t4.sum({1});
+  auto t6 = t0 + t3;
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, {t0, t3});
+  auto cg_outputs = fe.runFusion({t0, t3});
+
+  testValidate(&fusion, cg_outputs, {t0, t3}, {t2, t5, t6}, __LINE__, __FILE__);
+}
+
+// Make sure matching views are segmented into the same kernel
+TEST_F(NVFuserTest, FusionViewMagicSchedule1_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int x = 31, y = 65, z = 103;
+
+  auto tv0 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv0);
+
+  auto tv1 = sin(tv0);
+
+  auto tv2 = view(tv1, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv2);
+
+  auto tv3 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv3);
+
+  auto tv4 = view(tv3, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv4);
+
+  // Link 0 and 3 together for view analysis done based on before the views
+  // actually happened.
+  auto tv5 = add(tv0, tv3);
+  fusion.addOutput(tv5);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({x, y, z}, options);
+  at::Tensor t3 = at::randn({x, y, z}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {x, y * z});
+  auto t4 = at::native::view(t3, {x, y * z});
+  auto t5 = t0 + t3;
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t3});
+  TORCH_CHECK(!executor_cache.getMostRecentKernelRuntime()->isSegmented());
+
+  testValidate(&fusion, cg_outputs, {t0, t3}, {t2, t4, t5}, __LINE__, __FILE__);
+}
+
+// Make sure views of views are correct
+TEST_F(NVFuserTest, FusionViewMagicSchedule2_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int x = 31, y = 65, z = 103;
+
+  auto tv0 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv0);
+
+  auto tv1 = sin(tv0);
+
+  auto tv2 = view(tv1, {x, y, z}, {x, y * z});
+  auto tv3 = view(tv2, {x, y * z}, {x * y, z});
+  auto tv4 = view(tv3, {x * y, z}, {y, x * z});
+  auto tv5 = view(tv4, {y, x * z}, {x, y, z});
+  fusion.addOutput(tv5);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({x, y, z}, options);
+  auto aten_out = sin(t0);
+
+  // For now pointwise scheduler only accepts a single view at a time, so this
+  // will be broken up into multiple kernels. This is due to the reference check
+  // looking for all mappings to all input IDs.
+  // TODO: Fix the reference check for this case
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0});
+
+  testValidate(&fusion, cg_outputs, {t0}, {aten_out}, __LINE__, __FILE__);
+}
+
+// Make sure broadcasts not on the view path that don't interfere with view are
+// segmented in one kernel and correctly trigger 2D pointwise scheduling
+TEST_F(NVFuserTest, FusionViewMagicSchedule3_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int w = 15, x = 31, y = 49, z = 65;
+
+  auto tv0 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv0);
+
+  auto tv1 = sin(tv0);
+
+  auto tv2 = view(tv1, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv2);
+
+  auto tv3 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv3);
+
+  auto tv4 = view(tv3, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv4);
+
+  // Link 0 and 3 together for view analysis done based on before the views
+  // actually happened.
+  auto tv5 = add(tv0, tv3);
+  fusion.addOutput(tv5);
+
+  // Broadcast on another branch to drive the pointwise reference to not be on
+  // the view paths.
+
+  auto tv6 = makeConcreteTensor({w, x, y, z});
+  fusion.addInput(tv6);
+  auto tv7 = broadcast(tv0, {true, false, false, false});
+  auto tv8 = add(tv6, tv7);
+  // tv8 should be the reference for the pointwise fusion. This broadcast
+  // pattern doesn't interfere with the views, so this should also be scheduled
+  // as 2D.
+  fusion.addOutput(tv8);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({x, y, z}, options);
+  at::Tensor t3 = at::randn({x, y, z}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {x, y * z});
+  auto t4 = at::native::view(t3, {x, y * z});
+  auto t5 = t0 + t3;
+  at::Tensor t6 = at::randn({w, x, y, z}, options);
+  auto t8 = t6.add(t0);
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  // Collect the heuristic params
+  executor_cache.profile(true);
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t3, t6});
+
+  TORCH_CHECK(!executor_cache.getMostRecentKernelRuntime()->isSegmented());
+  TORCH_CHECK(executor_cache.getMostRecentExecutorInfo()
+                  .params->isA<PointwiseParams>());
+  auto pparams =
+      executor_cache.getMostRecentExecutorInfo().params->as<PointwiseParams>();
+  TORCH_CHECK(pparams->break_point == 1);
+
+  testValidate(
+      &fusion, cg_outputs, {t0, t3, t6}, {t2, t4, t5, t8}, __LINE__, __FILE__);
+}
+
+// Make sure broadcasts through views when not conflicting with view are
+// segmented into one kernel and trigger 2D pointwise scheduler.
+TEST_F(NVFuserTest, FusionViewMagicSchedule4_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int w = 15, x = 31, y = 49, z = 65;
+
+  auto tv0 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv0);
+
+  auto tv1 = sin(tv0);
+
+  auto tv2 = view(tv1, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv2);
+
+  auto tv3 = makeConcreteTensor({x, y, z});
+  fusion.addInput(tv3);
+
+  auto tv4 = makeConcreteTensor({x, 1, 1});
+  fusion.addInput(tv4);
+
+  auto tv5 = add(tv4, tv3);
+
+  auto tv6 = view(tv5, {x, y, z}, {x, y * z});
+  fusion.addOutput(tv6);
+
+  // Link 0 and 3 together for view analysis done based on before the views
+  // actually happened.
+  auto tv7 = add(tv0, tv3);
+  fusion.addOutput(tv7);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({x, y, z}, options);
+  at::Tensor t3 = at::randn({x, y, z}, options);
+  at::Tensor t4 = at::randn({x, 1, 1}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {x, y * z});
+  auto t5 = t4 + t3;
+  auto t6 = at::native::view(t5, {x, y * z});
+  auto t7 = t0 + t3;
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  // Collect the heuristic params
+  executor_cache.profile(true);
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t3, t4});
+
+  TORCH_CHECK(!executor_cache.getMostRecentKernelRuntime()->isSegmented());
+  TORCH_CHECK(executor_cache.getMostRecentExecutorInfo()
+                  .params->isA<PointwiseParams>());
+  auto pparams =
+      executor_cache.getMostRecentExecutorInfo().params->as<PointwiseParams>();
+  TORCH_CHECK(pparams->break_point == 1);
+
+  testValidate(
+      &fusion, cg_outputs, {t0, t3, t4}, {t2, t6, t7}, __LINE__, __FILE__);
+}
+
+// Make sure different views that are consumed by the reference are segmented
+// into a single kernel.
+TEST_F(NVFuserTest, FusionViewMagicSchedule5_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int w = 15, x = 31, y = 49, z = 65;
+
+  auto tv0 = makeConcreteTensor({w, x, y * z});
+  fusion.addInput(tv0);
+  auto tv1 = sin(tv0);
+  auto tv2 = view(tv1, {w, x, y * z}, {z, y, x, w});
+
+  auto tv3 = makeConcreteTensor({w, x * y, z});
+  fusion.addInput(tv3);
+  auto tv4 = cos(tv3);
+  auto tv5 = view(tv4, {w, x * y, z}, {z, y, x, w});
+
+  auto tv6 = add(tv2, tv5);
+  fusion.addOutput(tv6);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({w, x, y * z}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {z, y, x, w});
+  at::Tensor t3 = at::randn({w, x * y, z}, options);
+  auto t4 = cos(t3);
+  auto t5 = at::native::view(t4, {z, y, x, w});
+  auto t6 = add(t2, t5);
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  // Collect the heuristic params
+  executor_cache.profile(true);
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t3});
+
+  TORCH_CHECK(!executor_cache.getMostRecentKernelRuntime()->isSegmented());
+  TORCH_CHECK(executor_cache.getMostRecentExecutorInfo()
+                  .params->isA<PointwiseParams>());
+
+  testValidate(&fusion, cg_outputs, {t0, t3}, {t6}, __LINE__, __FILE__);
+}
+
+// placeholder for FusionViewMagicSchedule6_CUDA
+
+// View with 3D reduction scheduling
+TEST_F(NVFuserTest, FusionViewMagicSchedule7_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int v = 3, w = 5, x = 42, y = 7, z = 9;
+
+  auto tv0 = makeConcreteTensor({w, v, x, y, z});
+  fusion.addInput(tv0);
+  auto tv1 = sin(tv0);
+  auto tv2 = view(tv1, {w, v, x, y, z}, {v * w, x, y * z});
+
+  auto tv3 = makeConcreteTensor({v, w, x, z, y});
+  fusion.addInput(tv3);
+  auto tv4 = cos(tv3);
+  auto tv5 = view(tv4, {v, w, x, z, y}, {v * w, x, y * z});
+
+  auto tv6 = add(tv2, tv5);
+  auto tv7 = sum(tv6, {0, 2});
+  fusion.addOutput(tv7);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({w, v, x, y, z}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {v * w, x, y * z});
+  at::Tensor t3 = at::randn({v, w, x, z, y}, options);
+  auto t4 = cos(t3);
+  auto t5 = at::native::view(t4, {v * w, x, y * z});
+  auto t7 = add(t2, t5).sum(2).sum(0);
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  // Collect the heuristic params
+  executor_cache.profile(true);
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t3});
+
+  TORCH_CHECK(!executor_cache.getMostRecentKernelRuntime()->isSegmented());
+  TORCH_CHECK(executor_cache.getMostRecentExecutorInfo()
+                  .params->isA<ReductionParams>());
+
+  testValidate(&fusion, cg_outputs, {t0, t3}, {t7}, __LINE__, __FILE__);
+}
+
+// View with 3D normalization scheduling
+TEST_F(NVFuserTest, FusionViewMagicSchedule8_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int v = 3, w = 5, x = 42, y = 7, z = 9;
+
+  auto tv0 = makeConcreteTensor({w, v, x, y, z});
+  fusion.addInput(tv0);
+  auto tv1 = sin(tv0);
+  auto tv2 = view(tv1, {w, v, x, y, z}, {v * w, x, y * z});
+
+  auto tv3 = makeConcreteTensor({v, w, x, z, y});
+  fusion.addInput(tv3);
+  auto tv4 = cos(tv3);
+  auto tv5 = view(tv4, {v, w, x, z, y}, {v * w, x, y * z});
+
+  auto tv6 = add(tv2, tv5);
+  auto tv7 = sum(tv6, {0, 2});
+  auto tv8 = broadcast(tv7, {true, false, true});
+  auto tv9 = add(tv6, tv8);
+  fusion.addOutput(tv9);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({w, v, x, y, z}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {v * w, x, y * z});
+  // This might trigger transpose kernel.
+  at::Tensor t3 = at::randn({v, w, x, z, y}, options);
+  auto t4 = cos(t3);
+  auto t5 = at::native::view(t4, {v * w, x, y * z});
+  auto t6 = add(t2, t5);
+  auto t7 = t6.sum(2).sum(0);
+  auto t8 = t7.unsqueeze(-1).unsqueeze(0);
+  auto t9 = t6 + t8;
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  // Collect the heuristic params
+  executor_cache.profile(true);
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t3});
+
+  TORCH_CHECK(!executor_cache.getMostRecentKernelRuntime()->isSegmented());
+  TORCH_CHECK(executor_cache.getMostRecentExecutorInfo()
+                  .params->isA<ReductionParams>());
+
+  testValidate(&fusion, cg_outputs, {t0, t3}, {t9}, __LINE__, __FILE__);
+}
+
+// AlbertForMaskedLM repro https://github.com/csarofeen/pytorch/issues/2066
+TEST_F(NVFuserTest, FusionViewMagicSchedule9_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int x = 2, y = 512, z = 128;
+
+  auto tv0 = makeContigTensor(1);
+  auto tv1 = makeContigTensor(2);
+  auto tv2 = makeContigTensor(1);
+  auto tv3 = makeContigTensor(2);
+  auto tv4 = makeContigTensor(3);
+  fusion.addInput(tv0);
+  fusion.addInput(tv1);
+  fusion.addInput(tv2);
+  fusion.addInput(tv3);
+  fusion.addInput(tv4);
+
+  auto tv5 = broadcast(tv0, {true, true, false});
+  auto tv6 = broadcast(tv1, {false, false, true});
+  auto tv7 = broadcast(tv2, {true, true, false});
+  auto tv8 = broadcast(tv3, {false, false, true});
+  auto tv9 = set(tv6);
+
+  auto s10 = IrBuilder::create<Double>(1e-12);
+  auto tv11 = add(abs(tv8), s10);
+
+  auto tv12 = sub(tv4, tv9);
+  auto tv13 = rsqrt(tv11);
+  auto tv14 = broadcast(tv13, {false, false, false});
+  auto tv15 = mul(tv12, tv14);
+  auto tv16 = mul(tv15, tv5);
+  auto tv17 = add(tv16, tv7);
+  auto tv18 = castOp(DataType::Float, tv17);
+  auto tv19 = view(tv18, {x, y, z}, {x * y, z});
+  fusion.addOutput(tv6);
+  fusion.addOutput(tv13);
+  fusion.addOutput(tv19);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  auto t0 = at::randn({128}, options);
+  auto t1 = at::randn({2, 512}, options);
+  auto t2 = at::randn({128}, options);
+  auto t3 = at::randn({2, 512}, options);
+  auto t4 = at::randn({2, 512, 128}, options);
+
+  auto t5 = t0.unsqueeze(0).unsqueeze(0);
+  auto t6 = t1.unsqueeze(-1);
+  auto t7 = t2.unsqueeze(0).unsqueeze(0);
+  auto t8 = t3.unsqueeze(-1);
+  auto t9 = t6;
+
+  auto t11 = t8.abs().add(1.e-12);
+  auto t12 = t4.sub(t9);
+  auto t13 = t11.rsqrt();
+  auto t14 = t13;
+  auto t15 = t12.mul(t14);
+  auto t16 = t15.mul(t5);
+  auto t17 = t16.add(t7);
+  auto t18 = t17.to(at::kFloat);
+  auto t19 = at::native::view(t18, {x * y, z});
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t1, t2, t3, t4});
+
+  testValidate(
+      &fusion,
+      cg_outputs,
+      {t0, t1, t2, t3, t4},
+      {t6, t13, t19},
+      __LINE__,
+      __FILE__);
+}
+
+// Simpler version of FusionViewMagicSchedule9_CUDA
+TEST_F(NVFuserTest, FusionViewMagicSchedule10_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int x = 2, y = 512, z = 128;
+
+  auto tv0 = makeContigTensor(1);
+  auto tv1 = makeContigTensor(2);
+  auto tv2 = makeContigTensor(3);
+  fusion.addInput(tv0);
+  fusion.addInput(tv1);
+  fusion.addInput(tv2);
+
+  auto tv3 = broadcast(tv0, {true, true, false});
+  auto tv4 = broadcast(tv1, {false, false, true});
+
+  auto tv5 = add(tv2, tv4);
+  auto tv6 = add(tv5, tv3);
+  auto tv7 = view(tv6, {x, y, z}, {x * y, z});
+  fusion.addOutput(tv4);
+  fusion.addOutput(tv7);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  auto t0 = at::randn({128}, options);
+  auto t1 = at::randn({2, 512}, options);
+  auto t2 = at::randn({2, 512, 128}, options);
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t1, t2});
+}
+
+// CamemBert repro
+TEST_F(NVFuserTest, FusionViewMagicSchedule11_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int x = 512, y = 12, z = 64;
+
+  auto tv0 = makeContigConcreteTensor({1, -1, -1, -1});
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = view(tv1, {1, x, y, z}, {1, x, y * z});
+  auto tv3 = view(tv2, {1, x, y * z}, {x, y * z});
+  fusion.addOutput(tv3);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  auto t0 = at::randn({1, x, y, z}, options);
+  auto t2 = at::native::view(t0, {1, x, y * z});
+  auto t3 = at::native::view(t2, {x, y * z});
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0});
+
+  testValidate(&fusion, cg_outputs, {t0}, {t3}, __LINE__, __FILE__);
+}
+
+// Make sure different views that are consumed by the reference are segmented
+// into a single kernel.
+TEST_F(NVFuserTest, FusionViewMapping_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int w = 15, x = 31, y = 49, z = 65;
+
+  auto tv0 = makeConcreteTensor({w, x, y * z});
+  fusion.addInput(tv0);
+  auto tv1 = sin(tv0);
+  auto tv2 = view(tv1, {w, x, y * z}, {z, y, x, w});
+
+  auto tv3 = makeConcreteTensor({w, x * y, z});
+  fusion.addInput(tv3);
+  auto tv4 = cos(tv3);
+  auto tv5 = view(tv4, {w, x * y, z}, {z, y, x, w});
+
+  auto tv6 = add(tv2, tv5);
+  fusion.addOutput(tv6);
+
+  tv6->merge(0);
+  tv6->merge(0);
+  tv6->merge(0);
+  tv6->split(0, 128);
+  tv6->split(0, 4);
+  tv6->axis(0)->parallelize(ParallelType::BIDx);
+  tv6->axis(1)->parallelize(ParallelType::Unroll);
+  tv6->axis(2)->parallelize(ParallelType::TIDx);
+
+  TransformPropagator propagator(tv6);
+  MaxRootDomainInfoSpanningTree spanning_tree(tv6);
+  spanning_tree.traverse(&propagator);
+  scheduler_utils::parallelizeAllLike(tv6);
+
+  // Inline the schedule
+  inlineMost();
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({w, x, y * z}, options);
+  auto t1 = sin(t0);
+  auto t2 = at::native::view(t1, {z, y, x, w});
+  at::Tensor t3 = at::randn({w, x * y, z}, options);
+  auto t4 = cos(t3);
+  auto t5 = at::native::view(t4, {z, y, x, w});
+  auto t6 = add(t2, t5);
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, {t0, t3});
+  auto cg_outputs = fe.runFusion({t0, t3});
+
+  testValidate(&fusion, cg_outputs, {t0, t3}, {t6}, __LINE__, __FILE__);
+}
+
+TEST_F(NVFuserTest, FusionLowerDivisibleSplits_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int w = 15, x = 31, y = 49, z = 65;
+
+  auto tv0 = makeContigTensor(4);
+  fusion.addInput(tv0);
+  auto tv1 = sin(tv0);
+  auto tv2 = view(tv1, {w, x, y, z}, {z, y, x, w});
+
+  fusion.addOutput(tv2);
+
+  tv2->merge(0)->merge(0)->merge(0)->split(0, 4)->split(0, 8, false);
+
+  TransformPropagator propagator(tv2);
+  MaxRootDomainInfoSpanningTree spanning_tree(tv2);
+  spanning_tree.traverse(&propagator);
+  scheduler_utils::parallelizeAllLike(tv2);
+
+  // Inline the schedule
+  inlineMost();
+
+  auto divisible_splits = getAllDivisibleSplits(&fusion);
+
+  // Operations on all tensors are basically:
+  // [10] merge(0)          [9]->outer->definition
+  // [9] merge(0)           [8]->outer->definition
+  // [8] merge(0)           [7]->in->definition
+  // [7] split(0, z, false) [6]->in->definition
+  // [6] split(1, y, false) [5]->in->definition
+  // [5] split(2, x, false) [3]->inner->definition
+  // RFactor of tv2
+  // [4] merge(0)           [3]->outer->definition
+  // [3] merge(0)           [2]->outer->definition
+  // [2] merge(0)           [1]->in->definition
+  // [1] split(0, 4)        [0]->in->definition
+  // [0] split(0, 8, false) tv->axis(0)->definition
+
+  for (auto tv : std::vector<TensorView*>({tv2, tv1, tv0})) {
+    auto transform_0 = tv->axis(0)->definition()->as<Split>();
+    auto transform_1 = transform_0->in()->definition()->as<Split>();
+    auto transform_2 = transform_1->in()->definition()->as<Merge>();
+    auto transform_3 = transform_2->outer()->definition()->as<Merge>();
+
+    auto transform_5 = transform_3->inner()->definition()->as<Split>();
+    auto transform_6 = transform_5->in()->definition()->as<Split>();
+    auto transform_7 = transform_6->in()->definition()->as<Split>();
+
+    TORCH_CHECK(
+        divisible_splits.find(transform_5) != divisible_splits.end(),
+        "Expecting: ",
+        transform_5->toString(),
+        "\nFrom TV: ",
+        tv,
+        "\nTo be a divisible split.");
+    TORCH_CHECK(
+        divisible_splits.find(transform_6) != divisible_splits.end(),
+        "Expecting: ",
+        transform_6->toString(),
+        "\nFrom TV: ",
+        tv,
+        "\nTo be a divisible split.");
+    TORCH_CHECK(
+        divisible_splits.find(transform_7) != divisible_splits.end(),
+        "Expecting: ",
+        transform_7->toString(),
+        "\nFrom TV: ",
+        tv,
+        "\nTo be a divisible split.");
+  }
+}
+
+TEST_F(NVFuserTest, FusionIssue2076_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  // torch.randn(4, 128, 1, 128, device='cuda').transpose(1,2),
+  // sizes[4, 128, 1, 128] strides[128*128, 128, 128, 1]
+  // sizes[4, 1, 128, 128] strides[128*128, 128, 128, 1]
+  auto tv0 = TensorViewBuilder()
+                 .shape({-1, 1, -1, -1})
+                 .dtype(DataType::Bool)
+                 .contiguity({false, true, true, true})
+                 .build();
+  fusion.addInput(tv0);
+
+  // torch.randn(48, 128, 128, device='cuda'),
+  auto tv1 = makeContigTensor(3);
+  fusion.addInput(tv1);
+
+  // torch.randn(4, 1, 128, 128, device='cuda'),
+  auto tv2 = makeContigConcreteTensor({-1, 1, -1, -1});
+  fusion.addInput(tv2);
+
+  auto tv3 = castOp(DataType::Float, tv0);
+  auto tv4 = view(tv1, {48, 128, 128}, {4, 12, 128, 128});
+
+  auto tv5 = mul(tv3, IrBuilder::create<Double>(1));
+  auto tv6 = sub(IrBuilder::create<Double>(1), tv5);
+  auto tv7 = castOp(DataType::Bool, tv6);
+  auto tv8 =
+      where(tv7, IrBuilder::create<Double>(-3.4028200000000001e+38), tv6);
+  auto tv9 = add(tv8, tv2);
+  auto tv10 = set(tv9);
+  auto tv11 = expand(
+      tv10,
+      {tv10->axis(0)->extent(),
+       IrBuilder::create<Int>(12),
+       tv10->axis(2)->extent(),
+       tv10->axis(3)->extent()});
+
+  auto tv12 = add(tv4, tv11);
+  auto tv13 = view(tv12, {4, 12, 128, 128}, {48, 128, 128});
+  auto tv14 = max(tv13, {2});
+  auto tv15 = broadcast(tv14, {false, false, true});
+  auto tv16 = set(tv15);
+  auto tv17 = expand(
+      tv16,
+      {tv16->axis(0)->extent(),
+       tv16->axis(1)->extent(),
+       IrBuilder::create<Int>(128)});
+  auto tv18 = sub(tv13, tv17);
+  auto tv19 = exp(tv18);
+  auto tv20 = sum(tv19, {2});
+  auto tv21 = broadcast(tv20, {false, false, true});
+  auto tv22 = set(tv21);
+  auto tv23 = expand(
+      tv22,
+      {tv22->axis(0)->extent(),
+       tv22->axis(1)->extent(),
+       IrBuilder::create<Int>(128)});
+  auto tv24 = div(tv19, tv23);
+
+  fusion.addOutput(tv9);
+  fusion.addOutput(tv24);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 =
+      at::randn({4, 128, 1, 128}, options).transpose(1, 2).to(at::kBool);
+  at::Tensor t1 = at::randn({48, 128, 128}, options);
+  at::Tensor t2 = at::randn({4, 1, 128, 128}, options);
+
+  auto t3 = t0.to(at::kFloat);
+  auto t4 = t1.view({4, 12, 128, 128});
+
+  // [4, 1, 128, 128]
+  auto t5 = t3 * 1;
+  auto t6 = 1 - t5;
+  auto t7 = t6.to(at::kBool);
+  auto t8 = at::where(t7, -3.4028200000000001e+38, t6);
+  auto t9 = t8 + t2;
+  auto t10 = t9;
+  // [4, 1, 128, 128]
+  auto t11 = t10.expand({4, 12, 128, 128});
+
+  auto t12 = t4 + t11;
+  auto t13 = t12.view({48, 128, 128});
+  // 48, 128, 128
+  auto t14 = std::get<0>(t13.max(2));
+  auto t15 = t14.unsqueeze(-1);
+  // 48, 128, 1
+  auto t16 = t15;
+  auto t17 = t16.expand({48, 128, 128});
+  auto t18 = t13 - t17;
+  auto t19 = t18.exp();
+  auto t20 = t19.sum({2});
+  auto t21 = t20.unsqueeze(-1);
+  auto t22 = t21;
+  auto t23 = t22.expand({48, 128, 128});
+  auto t24 = t19 / t23;
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t1, t2});
+  testValidate(
+      &fusion, cg_outputs, {t0, t1, t2}, {t9, t24}, __LINE__, __FILE__);
+}
+
+// Simplify first to reproduce compute at issue
+TEST_F(NVFuserTest, FusionIssue2076_v2_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  // torch.randn(4, 128, 1, device='cuda').transpose(1,2)
+  // sizes[4, 128, 1] strides[128, 1, 1]
+  // sizes[4, 1, 128] strides[128, 128, 1]
+  auto tv0 = TensorViewBuilder()
+                 .shape({-1, 1, -1})
+                 .contiguity({false, true, true})
+                 .build();
+  fusion.addInput(tv0);
+
+  // torch.randn(48, 128, device='cuda')
+  auto tv1 = makeContigTensor(2);
+  fusion.addInput(tv1);
+
+  // torch.randn(4, 1, 128, device='cuda'),
+  auto tv2 = makeContigConcreteTensor({-1, 1, -1});
+  fusion.addInput(tv2);
+
+  auto tv3 = view(tv1, {48, 128}, {4, 12, 128});
+  auto tv4 = add(tv0, tv2);
+
+  auto tv5 = add(tv3, tv4);
+  auto tv6 = view(tv5, {4, 12, 128}, {48, 128});
+
+  fusion.addOutput(tv4);
+  fusion.addOutput(tv6);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({4, 128, 1}, options).transpose(1, 2);
+  at::Tensor t1 = at::randn({48, 128}, options);
+  at::Tensor t2 = at::randn({4, 1, 128}, options);
+
+  auto t3 = t1.view({4, 12, 128});
+
+  // [4, 1, 128]
+  auto t4 = t0.add(t2);
+  auto t5 = t3.add(t4);
+  auto t6 = t5.view({48, 128});
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t1, t2});
+  testValidate(&fusion, cg_outputs, {t0, t1, t2}, {t4, t6}, __LINE__, __FILE__);
 }
 
 } // namespace jit

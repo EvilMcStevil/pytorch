@@ -1,9 +1,9 @@
 #include <torch/csrc/jit/codegen/cuda/lower_alias_memory.h>
 
+#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
@@ -18,16 +18,19 @@ namespace fuser {
 namespace cuda {
 
 namespace {
+// Alias used for std::transform
+IterDomain* exactConcreteId(IterDomain* id) {
+  return GpuLower::current()->caMap()->getConcreteMappedID(
+      id, IdMappingMode::EXACT);
+}
 
-//! Checks that the current loop nest is not realizing a serial
-//!  broadcast so that each index of producer buffer will only
-//!  be visited once, which is the only case where aggressive
-//!  inner sharing is valid.
-//!
+//! Checks that the current loop nest is realizing a serial
+//!  broadcast so that each index of producer buffer can be visited
+//!  multiple times, in which case the aggressive is not valid.
 bool isSerialBroadcastResolution(TensorView* producer, TensorView* consumer) {
   //! Note: see issue #1785:
   //!  serial broadcast resolution doesn't only happen to
-  //! immediate producers of broadcast ops. We can also have
+  //! immediate outputs of broadcast ops. We can also have
   //! example:
   //!  T1[I,B] = broadcast(T0[I]])
   //!  T3[I,I] = T1[I,B] + T2[I,I]
@@ -83,7 +86,7 @@ bool isSerialBroadcastResolution(TensorView* producer, TensorView* consumer) {
       std::inserter(
           producer_exact_concrete_root_ids,
           producer_exact_concrete_root_ids.begin()),
-      ir_utils::caMapExactConcreteId);
+      exactConcreteId);
 
   // Check if serial loop roots indexes any exact root id's that
   //  is not within the set of producer's root exact id's. These
@@ -92,7 +95,8 @@ bool isSerialBroadcastResolution(TensorView* producer, TensorView* consumer) {
   for (auto serial_loop_root :
        ir_utils::filterByType<IterDomain>(serial_loop_roots)) {
     if (!producer_exact_concrete_root_ids.count(
-            ir_utils::caMapExactConcreteId(serial_loop_root))) {
+            GpuLower::current()->caMap()->getConcreteMappedID(
+                serial_loop_root, IdMappingMode::EXACT))) {
       return true;
     }
   }
@@ -305,10 +309,14 @@ class BufferLiveInterval {
     last_read_pos_ = pos;
     TORCH_INTERNAL_ASSERT(
         first_write_pos_ > 0,
-        "lower_alias_memory: a read seen before any write")
+        "lower_alias_memory: a read seen before any write");
     TORCH_INTERNAL_ASSERT(
-        pos > first_write_pos_,
-        "lower_alias_memory: marking a read before write");
+        pos >= first_write_pos_,
+        "lower_alias_memory: marking a read (",
+        pos,
+        ") before write (",
+        first_write_pos_,
+        ")");
     all_read_pos_.push_back(pos);
   }
 
@@ -414,7 +422,7 @@ using AllocationInfoList = std::vector<AllocationInfoPtr>;
 //!  `outer_live_interval`,
 //!   Inner interval marks the exprs that are the first write and last read of
 //!   the buffer.
-//!   Outer interval marks the begining of the loop of first write and end of
+//!   Outer interval marks the beginning of the loop of first write and end of
 //!   the loop of last read, both at the same loop level as the buffer
 //!   allocation.
 class BufferUseDefInfo {
@@ -559,13 +567,12 @@ class BufferUseDefInfo {
     // Skip smaller register sizes
     bool should_try_alias = true;
     if (mem_type == MemoryType::Local) {
-      const auto register_size = expr_evaluator_.evaluate(alloc->size());
-      if (!register_size.has_value()) {
+      if (!alloc->size()->isConstInt()) {
         TORCH_WARN_ONCE(
             "Lower_alias_memory : dynamic sized register allocation");
         return;
       }
-      if (register_size->as<int64_t>() <= kRegisterSizeThreshold) {
+      if (alloc->size()->evaluateInt() <= kRegisterSizeThreshold) {
         should_try_alias = false;
       }
     }
@@ -662,15 +669,25 @@ class BufferUseDefInfo {
     for (auto output_tv : ir_utils::filterByType<TensorView>(expr->outputs())) {
       auto maybe_alloc_info = getMaybeAllocInfoFromTV(output_tv);
       if (maybe_alloc_info.has_value()) {
+        // Reductions use outputs as read-write parameters, so their
+        // outputs need to be marked as read as well
+        const bool is_read_write = ir_utils::isReductionOp(expr) &&
+            std::any_of(output_tv->getMaybeRFactorDomain().begin(),
+                        output_tv->getMaybeRFactorDomain().end(),
+                        [](IterDomain* id) { return id->isReduction(); });
         maybe_alloc_info.value()->inner_live_interval->markWrite(current_pos_);
+        if (is_read_write) {
+          maybe_alloc_info.value()->inner_live_interval->markRead(current_pos_);
+        }
         auto outer_loop_info =
             ascendLoopNestToSameLevelAs(maybe_alloc_info.value());
-        if (outer_loop_info) {
-          maybe_alloc_info.value()->outer_live_interval->markWrite(
-              outer_loop_info->start_pos);
-        } else {
-          maybe_alloc_info.value()->outer_live_interval->markWrite(
-              current_pos_);
+        auto write_pos =
+            outer_loop_info ? outer_loop_info->start_pos : current_pos_;
+        maybe_alloc_info.value()->outer_live_interval->markWrite(write_pos);
+        if (is_read_write) {
+          auto read_pos =
+              outer_loop_info ? outer_loop_info->end_pos : current_pos_;
+          maybe_alloc_info.value()->outer_live_interval->markRead(read_pos);
         }
       }
     }
@@ -793,9 +810,6 @@ class BufferUseDefInfo {
 
   //! Owning list of collected allocation info
   ScopeInfoOwningPtrList all_loop_infos_;
-
-  //! Expression Evaluator to infer size of register allocation
-  kir::ExpressionEvaluator expr_evaluator_;
 
   //! Position counter when iterating through the exprs list
   int current_pos_ = -1;
@@ -1177,7 +1191,7 @@ class AllocateReuseModifier {
     return false;
   }
 
-  // Utility to capture reduction ops
+  // Utility to capture broadcast ops
   bool isBroadcastTvOp(const Expr* expr) {
     if (!ir_utils::isTvOp(expr)) {
       return false;

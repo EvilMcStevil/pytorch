@@ -137,7 +137,7 @@ void ReplayTransformations::handle(Swizzle2D* swizzle_2d) {
   auto id_in_y = swizzle_2d->inY();
 
   // Make sure we have a corresponding entry in our map pointing to the ID we're
-  // going to replay the split on
+  // going to replay the swizzle on
   auto it_x = id_map_.find(id_in_x);
   auto it_y = id_map_.find(id_in_y);
 
@@ -162,7 +162,7 @@ void ReplayTransformations::handle(Swizzle2D* swizzle_2d) {
   auto outs = std::make_pair(mapped_x, mapped_y);
 
   if (replay_swizzle_) {
-    // Replay the split onto mapped
+    // Replay the swizzle onto mapped
     outs = IterDomain::swizzle(swizzle_2d->swizzleType(), mapped_x, mapped_y);
 
     // Remove mapped from the leaf IDs
@@ -224,7 +224,7 @@ void ReplayTransformations::runReplay() {
   // Switch outDomain to a vector to start the traversal
   std::vector<Val*> traversal_vals(
       target_domain_.begin(), target_domain_.end());
-  traverseFrom(traversal_vals[0]->fusion(), traversal_vals);
+  traverseTo(traversal_vals[0]->fusion(), traversal_vals);
 
   if (error_on_failure_)
     TORCH_INTERNAL_ASSERT(
@@ -273,11 +273,13 @@ BestEffortReplay::BestEffortReplay(
     std::unordered_map<IterDomain*, IterDomain*> target2replay_map,
     std::unordered_map<IterDomain*, IterDomain*> replay_forward_id_map,
     std::unordered_map<IterDomain*, IterDomain*> target_forward_id_map,
-    bool skip_swizzle)
+    bool skip_replay_swizzle,
+    bool skip_target_swizzle)
     : target2replay_id_map_(std::move(target2replay_map)),
       replay_forward_id_map_(std::move(replay_forward_id_map)),
       target_forward_id_map_(std::move(target_forward_id_map)),
-      skip_swizzle_(skip_swizzle) {
+      skip_replay_swizzle_(skip_replay_swizzle),
+      skip_target_swizzle_(skip_target_swizzle) {
   for (auto entry : target2replay_id_map_) {
     leaf_ids_[entry.second] = counter++;
   }
@@ -340,7 +342,7 @@ BestEffortReplay::BestEffortReplay(
     }
   }
 
-  if (skip_swizzle_) {
+  if (skip_target_swizzle_ || skip_replay_swizzle_) {
     // Progress through all swizzle ops if we are skipping
     //  swizzles on the mapping.
     skipSwizzles(target_id2expr_map, replay_id2expr_map);
@@ -522,7 +524,8 @@ BestEffortReplay::BestEffortReplay(
 
     // Need to match swizzle type and parameters if
     //  not skipping swizzles in this mapping pass.
-    if (!skip_swizzle_ && replay_expr->etype() == ExprType::Swizzle2D) {
+    if (!(skip_replay_swizzle_ || skip_target_swizzle_) &&
+        replay_expr->etype() == ExprType::Swizzle2D) {
       auto r_swizzle_2d = replay_expr->as<Swizzle2D>();
       auto t_swizzle_2d = target_expr->as<Swizzle2D>();
       if (!(r_swizzle_2d->swizzleType() == t_swizzle_2d->swizzleType())) {
@@ -560,7 +563,7 @@ BestEffortReplay::BestEffortReplay(
       }
     }
 
-    if (skip_swizzle_) {
+    if (skip_target_swizzle_ || skip_replay_swizzle_) {
       // Progress through all swizzle ops if we are skipping
       //  swizzles on the mapping.
       skipSwizzles(target_id2expr_map, replay_id2expr_map);
@@ -748,31 +751,80 @@ struct ProducerForwardingInfo {
   // inputs, but maybe in the future we'll have more.
   std::unordered_map<IterDomain*, std::vector<IterDomain*>> compliment_map;
 
-  ProducerForwardingInfo(const TensorView* producer) {
+  ProducerForwardingInfo(
+      const TensorView* producer,
+      const TensorView* consumer) {
     std::vector<Expr*> producer_history = StmtSort::getExprs(
         FusionGuard::getCurFusion(),
         std::vector<Val*>(
             producer->domain()->domain().begin(),
             producer->domain()->domain().end()));
 
-    for (auto merge : ir_utils::filterByType<Merge>(producer_history)) {
-      auto inner = merge->inner();
-      auto outer = merge->outer();
-      if ((inner->isTrivialReduction() && !outer->isReduction()) ||
-          (outer->isTrivialReduction() && !inner->isReduction())) {
-        auto compliment_id = inner->isTrivialReduction() ? inner : outer;
-        auto forwarded_id = inner->isTrivialReduction() ? outer : inner;
-        // Only allow forwarding when the trivial reduction domain is
-        // an root domain
-        if (std::find(
-                producer->getMaybeRFactorDomain().begin(),
-                producer->getMaybeRFactorDomain().end(),
-                compliment_id) == producer->getMaybeRFactorDomain().end()) {
-          continue;
+    // Collect which root axes are in producer that are not in consumer because
+    // of squeeze
+    std::unordered_set<IterDomain*> producer_bcast_roots_not_in_consumer;
+
+    const auto p2c_root_map =
+        PairwiseRootDomainMap(producer, consumer)
+            .mapProducerToConsumer(producer->domain(), consumer->domain());
+
+    for (auto producer_root_id : producer->getMaybeRFactorDomain()) {
+      if (producer_root_id->isBroadcast()) {
+        if (p2c_root_map.find(producer_root_id) == p2c_root_map.end()) {
+          producer_bcast_roots_not_in_consumer.emplace(producer_root_id);
         }
-        forwarding_map.emplace(std::make_pair(forwarded_id, merge->out()));
-        compliment_map.emplace(std::make_pair(
-            forwarded_id, std::vector<IterDomain*>{compliment_id}));
+      }
+    }
+
+    // We have root axes in producer that don't exist in consumer, now forward
+    // those to include all id's in producer comprised of only axes not in
+    // consumer.
+    auto producer_bcast_ids_not_in_consumer =
+        producer_bcast_roots_not_in_consumer;
+
+    auto isIdOnlyInProducer =
+        [&producer_bcast_ids_not_in_consumer](IterDomain* input_id) {
+          return producer_bcast_ids_not_in_consumer.find(input_id) !=
+              producer_bcast_ids_not_in_consumer.end();
+        };
+
+    for (auto expr : producer_history) {
+      auto input_ids = ir_utils::filterByType<IterDomain>(expr->inputs());
+      // If expr inputs are all in producer_bcast_ids_not_in_consumer, than so
+      // are all outputs
+      if (std::all_of(input_ids.begin(), input_ids.end(), isIdOnlyInProducer)) {
+        // add all outputs to not being in producer
+        for (auto output_ids :
+             ir_utils::filterByType<IterDomain>(expr->outputs())) {
+          producer_bcast_ids_not_in_consumer.emplace(output_ids);
+        }
+      } else if (
+          expr->isA<Merge>() &&
+          std::any_of(input_ids.begin(), input_ids.end(), isIdOnlyInProducer)) {
+        auto merge_expr = expr->as<Merge>();
+        // If
+        // - one of the inputs is made of id's in producer that don't map to
+        // consumer (squeeze axes),
+        // - && the other input maps to an id in both consumer and producer
+        // - && this is a merge
+        //   for the sake of BestEffortReplay we can forward the input mapping
+        //   to both consumer and producer to the output of the expression
+        std::vector<IterDomain*> forwarded_ids;
+        std::vector<IterDomain*> compliment_ids;
+
+        for (auto input_id : input_ids) {
+          if (!isIdOnlyInProducer(input_id)) {
+            forwarded_ids.emplace_back(input_id);
+            forwarding_map.emplace(std::make_pair(input_id, merge_expr->out()));
+          } else {
+            compliment_ids.push_back(input_id);
+          }
+        }
+
+        // Set up compliment map
+        for (auto forwarded_id : forwarded_ids) {
+          compliment_map.emplace(std::make_pair(forwarded_id, compliment_ids));
+        }
       }
     }
   }
@@ -902,7 +954,9 @@ BestEffortReplay BestEffortReplay::replayCasP(
     const TensorView* consumer,
     const TensorView* producer,
     int producer_compute_at_axis,
-    const RootDomainMap& root_map) {
+    const RootDomainMap& root_map,
+    bool skip_consumer_swizzle,
+    bool skip_producer_swizzle) {
   if (producer_compute_at_axis < 0)
     producer_compute_at_axis += (int)producer->nDims() + 1;
 
@@ -942,14 +996,16 @@ BestEffortReplay BestEffortReplay::replayCasP(
   // See FusionAdvancedComputeAt7 for an example of the forwarding logic
   ConsumerForwardingInfo consumer_forwarding_info(producer, consumer);
 
-  ProducerForwardingInfo producer_forwarding_info(producer);
+  ProducerForwardingInfo producer_forwarding_info(producer, consumer);
 
   auto consumer_replay = BestEffortReplay(
       consumer->domain()->domain(),
       producer_CA_ids,
       p2c_root_map,
       consumer_forwarding_info.forwarding_map,
-      producer_forwarding_info.forwarding_map);
+      producer_forwarding_info.forwarding_map,
+      skip_consumer_swizzle,
+      skip_producer_swizzle);
 
   consumer_replay.addComplimentLeafIDs(
       consumer_forwarding_info.forwarding_map,
@@ -964,7 +1020,9 @@ BestEffortReplay BestEffortReplay::replayPasC(
     const TensorView* producer,
     const TensorView* consumer,
     int consumer_compute_at_axis,
-    const RootDomainMap& root_map) {
+    const RootDomainMap& root_map,
+    bool skip_producer_swizzle,
+    bool skip_consumer_swizzle) {
   if (consumer_compute_at_axis < 0)
     consumer_compute_at_axis += (int)consumer->nDims() + 1;
   TORCH_INTERNAL_ASSERT(
@@ -993,7 +1051,7 @@ BestEffortReplay BestEffortReplay::replayPasC(
 
   ConsumerForwardingInfo consumer_forwarding_info(producer, consumer);
 
-  ProducerForwardingInfo producer_forwarding_info(producer);
+  ProducerForwardingInfo producer_forwarding_info(producer, consumer);
 
   // Instead of replaying from the root, lets try to play forward the history
   // of producer if they match ops on consumer. Enforce if we modify an
@@ -1003,7 +1061,9 @@ BestEffortReplay BestEffortReplay::replayPasC(
       consumer_CA_ids,
       c2p_root_map,
       producer_forwarding_info.forwarding_map,
-      consumer_forwarding_info.forwarding_map);
+      consumer_forwarding_info.forwarding_map,
+      skip_producer_swizzle,
+      skip_consumer_swizzle);
 
   producer_replay.addComplimentLeafIDs(
       producer_forwarding_info.forwarding_map,
@@ -1021,11 +1081,16 @@ void BestEffortReplay::skipSwizzles(
   while (updated) {
     updated = false;
     for (auto it : target2replay_id_map_) {
-      if (isSwizzleInput(it.first, target_id2expr) ||
-          isSwizzleInput(it.second, replay_id2expr)) {
+      if ((isSwizzleInput(it.first, target_id2expr) && skip_target_swizzle_) ||
+          (isSwizzleInput(it.second, replay_id2expr) && skip_replay_swizzle_)) {
         updated = true;
-        auto new_target = getSwizzleFinalOutput(it.first, target_id2expr);
-        auto new_replay = getSwizzleFinalOutput(it.second, replay_id2expr);
+
+        auto new_target = skip_target_swizzle_
+            ? getSwizzleFinalOutput(it.first, target_id2expr)
+            : it.first;
+        auto new_replay = skip_replay_swizzle_
+            ? getSwizzleFinalOutput(it.second, replay_id2expr)
+            : it.second;
 
         // new_target and new_replay will now be the final output
         //  skipping all swizzles in between. We'd need to
@@ -1047,13 +1112,14 @@ void BestEffortReplay::skipSwizzles(
   }
 }
 
-DisjointSets<IterDomain*> BestEffortReplay::getDisjointSets() {
+DisjointSets<IterDomain*> BestEffortReplay::getIterDomainEquivalence() {
   DisjointSets<IterDomain*> result;
   const std::unordered_map<IterDomain*, IterDomain*>* maps[3] = {
       &target2replay_id_map_, &replay_forward_id_map_, &target_forward_id_map_};
   for (auto map : maps) {
-    for (auto entry : *map) {
-      result.mapEntries(entry.first, entry.second);
+    // Sort the keys so that they appear in a deterministic order
+    for (auto key : getSortedKeys(*map, Statement::lessThan)) {
+      result.mapEntries(key, map->at(key));
     }
   }
   return result;

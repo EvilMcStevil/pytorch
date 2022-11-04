@@ -154,14 +154,14 @@ class TORCH_CUDA_CU_API ComplexDouble : public Val {
 //! the compute at position to maximum possible through traversal.
 enum class ComputeAtMode { Standard, BestEffort, MostInlined };
 
-class InlinePropagator;
-class MaxProducerPosUpdater;
 class TransformPropagator;
 struct MostInlinedTransformPropagator;
 class TransformIter;
 class TransformReplay;
 class OptOutMutator;
 class TensorDomain;
+
+class MaxPosCalculator;
 
 namespace ir_utils {
 class TVDomainGuard;
@@ -322,14 +322,6 @@ class TORCH_CUDA_CU_API TensorView : public Val {
       int position,
       ComputeAtMode mode = ComputeAtMode::Standard);
 
-  //! Compute this tensor to consumer, at local position, -1 will compute
-  //! tensors inline with eachother, 0 doesn't share any loop nests between the
-  //! tensors. The mode parameter can be used in the same manner as computeAt.
-  TensorView* computeWith(
-      TensorView* consumer,
-      int position,
-      ComputeAtMode mode = ComputeAtMode::Standard);
-
   // Split "axis" into 2 axes
   //! inner_split dictates if the factor section of the split should be inside
   //! the
@@ -367,17 +359,6 @@ class TORCH_CUDA_CU_API TensorView : public Val {
 
   // Reorder axes according to old2new[old_pos] = new_pos
   TensorView* reorder(const std::unordered_map<int, int>& old2new);
-
-  //! Swizzle indices to improve memory access efficiency.
-  //!
-  //! Swizzle::Transpose is a pattern commonly used to avoid bank
-  //! conflicts in shared memory. It takes two axes and shifts the
-  //! second axis by the first axis as ((axis1 + axis2) % extent). The
-  //! memory type must be Shared.
-  //!
-  //! \input type Swizzle pattern such as transpose.
-  //! \input axes Axes to swizzle
-  TensorView* swizzle(SwizzleType type, const std::vector<int>& axes);
 
   //! Swizzle the rectangular tile defined by the iterdomains corresponding
   //!  to the 2 given indices.
@@ -443,14 +424,6 @@ class TORCH_CUDA_CU_API TensorView : public Val {
 
   void setMemoryType(MemoryType mt);
 
-  SwizzleType swizzleType() const {
-    return swizzle_type_;
-  }
-
-  const std::vector<IterDomain*>& axesToSwizzle() const {
-    return axes_to_swizzle_;
-  }
-
   // Apply double buffering transformation
   void doubleBuffer();
 
@@ -492,20 +465,29 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   friend TORCH_CUDA_CU_API MostInlinedTransformPropagator;
   friend TORCH_CUDA_CU_API TransformReplay;
   friend TORCH_CUDA_CU_API OptOutMutator;
-  friend TORCH_CUDA_CU_API InlinePropagator;
-  friend TORCH_CUDA_CU_API MaxProducerPosUpdater;
+  friend class InlineBatchingGuard;
   friend class ir_utils::TVDomainGuard;
-  friend TORCH_CUDA_CU_API void groupReductions(
-      const std::vector<TensorView*>&);
+
+  // Inline the computation of this tensor into its consumer at the given
+  // position. If this tensor is already inlined in a higher position, then this
+  // call is a no-op. If the right most dimensions before `pos` are
+  // broadcasting, then will not inline into these broadcastings. If
+  // best_effort, then will inline into the highest allowed position that is <=
+  // `pos`.
+  void inlineAt(
+      int64_t pos,
+      bool best_effort = false,
+      MaxPosCalculator* calc = nullptr);
+
+  // Update the max producer position of the current tensor. This is required
+  // when we modify producer-consumer relationship of a scheduled tensor, for
+  // example, grouping multiple reductions.
+  void updateMaxProducerPosition();
 
  protected:
   void setDomain(TensorDomain* td) {
     domain_ = td;
   }
-
-  void setComputeAt(unsigned int this_pos, bool decrease = false);
-
-  void setMaxProducer(unsigned int this_pos, bool decrease = false);
 
  private:
   int normalizeAxisPos(int pos) const {
@@ -526,8 +508,6 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   unsigned int compute_at_pos_ = 0;
   unsigned int max_producer_pos_ = 0;
   MemoryType memory_type_ = MemoryType::Local;
-  SwizzleType swizzle_type_ = SwizzleType::NoSwizzle;
-  std::vector<IterDomain*> axes_to_swizzle_;
   bool is_double_buffered_ = false;
 
   //! Indicates if the tensor is circular buffered.
@@ -575,6 +555,9 @@ class TORCH_CUDA_CU_API TensorViewBuilder {
   TensorViewBuilder& shape(std::vector<Val*> shape);
   TensorViewBuilder& shape(const std::vector<int64_t>& shape);
 
+  //! Set if a dimension is expanded
+  TensorViewBuilder& expanded(std::vector<bool> expanded);
+
   //! Creates a new TensorView with the specified options
   TensorView* build() const;
 
@@ -583,6 +566,7 @@ class TORCH_CUDA_CU_API TensorViewBuilder {
   DataType dtype_ = DataType::Float;
   std::vector<bool> contiguity_;
   std::vector<Val*> shape_;
+  std::vector<bool> expanded_;
 };
 
 } // namespace cuda

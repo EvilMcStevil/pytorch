@@ -1,7 +1,6 @@
 #include <torch/csrc/jit/codegen/cuda/lower_predicate_elimination.h>
 
 #include <torch/csrc/jit/codegen/cuda/arith.h>
-#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
@@ -112,8 +111,7 @@ class PredicateAnalyzer : public OptOutDispatch {
 
     // If consumer_id is not going to be materialized as a loop (e.g.,
     // broadcast), no need to predicate
-    if (consumer_id->isBroadcast() ||
-        GpuLower::current()->trivialReductionInfo().isDerived(consumer_id)) {
+    if (consumer_id->isBroadcast()) {
       return;
     }
 
@@ -141,10 +139,10 @@ class PredicateAnalyzer : public OptOutDispatch {
       return;
     }
 
-    ExpressionEvaluator ee(split->fusion());
-    const auto in_extent = ee.evaluate(split->in()->extent());
+    auto in_extent = split->in()->extent();
 
-    if (!in_extent.has_value() || ((in_extent.value() % factor.value()) != 0)) {
+    if (!in_extent->isConstInt() ||
+        ((in_extent->evaluateInt() % factor.value()) != 0)) {
       needs_predicate_ = true;
       return;
     }
@@ -303,12 +301,12 @@ class PredicateChcker : public IterVisitor {
 
   // Shift is not supported yet.
   bool predicateShift(Expr* expr) const {
-    auto& halo_info = GpuLower::current()->haloInfo();
+    auto halo_info = GpuLower::current()->haloInfo();
     auto input_tvs = ir_utils::filterByType<TensorView>(expr->inputs());
-    return halo_info.needsShiftPredicate(expr) ||
+    return halo_info->needsShiftPredicate(expr) ||
         std::any_of(input_tvs.begin(), input_tvs.end(), [&](auto input_tv) {
              return input_tv->definition() != nullptr &&
-                 halo_info.needsShiftPredicate(input_tv->definition());
+                 halo_info->needsShiftPredicate(input_tv->definition());
            });
   }
 
@@ -493,9 +491,7 @@ class PredicateChcker : public IterVisitor {
           output->getMaybeRFactorDomain().end(),
           std::inserter(split_root, split_root.end()),
           [&](auto rf_root) {
-            if (rf_root->isBroadcast() ||
-                GpuLower::current()->trivialReductionInfo().isDerived(
-                    rf_root)) {
+            if (rf_root->isBroadcast()) {
               return false;
             }
             for (Expr* use : rf_root->uses()) {
@@ -991,7 +987,7 @@ Val* PredicateElimination::getInitValue(TensorView* tv) const {
 }
 
 void PredicateElimination::build(Fusion* fusion) {
-  traverseFrom(fusion, fusion->outputs());
+  traverseTo(fusion, fusion->outputs());
 }
 
 std::string PredicateElimination::toString() const {

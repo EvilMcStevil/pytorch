@@ -161,6 +161,8 @@ void IrPrinter::handle(const TensorView* tv) {
     case MemoryType::Local:
       os_ << "_l";
       break;
+    default:
+      TORCH_INTERNAL_ASSERT(false, "Unknown tensor memory type.");
   }
   handle(tv->domain());
 
@@ -248,6 +250,35 @@ void IrPrinter::handle(const NamedScalar* ns) {
   os_ << ns->name();
 }
 
+void IrPrinter::handle(const FullOp* fop) {
+  if (!print_inline_) {
+    indent();
+    os_ << fop->output(0) << "\n";
+    indent_size_++;
+    indent();
+    os_ << " = ";
+  } else {
+    checkInlineable(fop);
+  }
+
+  os_ << "full({";
+  for (auto i : c10::irange(fop->inputs().size())) {
+    if (i == fop->inputs().size() - 1) {
+      os_ << "}";
+    }
+    if (i >= 0) {
+      os_ << ", ";
+    }
+    handle(fop->input(i));
+  }
+  os_ << ", " << fop->dtype() << ")";
+
+  indent_size_--;
+
+  if (!print_inline_)
+    os_ << ";\n";
+}
+
 void IrPrinter::handle(const ARangeOp* aop) {
   if (!print_inline_) {
     indent() << aop->output(0);
@@ -265,7 +296,28 @@ void IrPrinter::handle(const ARangeOp* aop) {
   handle(aop->end());
   os_ << ", ";
   handle(aop->step());
-  os_ << ")";
+  os_ << ", " << aop->dtype() << ")";
+
+  indent_size_--;
+
+  if (!print_inline_)
+    os_ << ";\n";
+}
+
+void IrPrinter::handle(const EyeOp* eop) {
+  if (!print_inline_) {
+    indent();
+    os_ << eop->output(0) << "\n";
+    indent_size_++;
+    indent();
+    os_ << " = ";
+  } else {
+    checkInlineable(eop);
+  }
+
+  os_ << "eye(";
+  handle(eop->input(0));
+  os_ << ", " << eop->dtype() << ")";
 
   indent_size_--;
 
@@ -429,21 +481,27 @@ void IrPrinter::handle(const RNGOp* rop) {
     checkInlineable(rop);
   }
 
-  os_ << rop->getRNGOpType() << "(";
+  os_ << rop->getRNGOpType() << "({";
   bool first = true;
-  for (auto i : rop->inputs()) {
+  for (auto i : rop->getShape()) {
     if (!first) {
       os_ << ", ";
     }
     handle(i);
     first = false;
   }
-  os_ << ")";
+  os_ << "}";
+  for (auto i : rop->getParameters()) {
+    os_ << ", ";
+    handle(i);
+  }
+  os_ << ", " << rop->dtype() << ")";
 
   indent_size_--;
 
-  if (!print_inline_)
+  if (!print_inline_) {
     os_ << ";\n";
+  }
 }
 
 void IrPrinter::handle(const ReductionOp* rop) {
@@ -520,6 +578,11 @@ void IrPrinter::handle(const LoadStoreOp* ldst) {
 void IrPrinter::handle(const BroadcastOp* bop) {
   indent() << bop->out() << "\n";
   indent() << "   = broadcast( " << bop->in() << " )\n";
+}
+
+void IrPrinter::handle(const SqueezeOp* bop) {
+  indent() << bop->out() << "\n";
+  indent() << "   = squeeze( " << bop->in() << " )\n";
 }
 
 void IrPrinter::handle(const Split* s) {
@@ -643,6 +706,8 @@ void IrPrinter::handle(const kir::TensorIndex* ti) {
     case MemoryType::Local:
       os_ << "_l";
       break;
+    default:
+      TORCH_INTERNAL_ASSERT(false, "Unknown tensor memory type.");
   }
   os_ << "[";
   for (auto index : ti->indices()) {
@@ -908,51 +973,6 @@ void IrPrinter::handle(const kir::AllocateFusedReduction* node) {
   os_ << ")\n";
 }
 
-void IrPrinter::handle(const kir::IntPair* node) {
-  if (print_inline_) {
-    if (node->definition()) {
-      handle(node->definition());
-      return;
-    }
-  }
-  os_ << "iPair" << varName(node);
-}
-
-void IrPrinter::handle(const kir::Swizzle2DInt* node) {
-  if (!print_inline_) {
-    indent();
-    handle(node->out());
-    os_ << " = ";
-  }
-
-  os_ << node->swizzleType() << "2D(";
-  handle(node->inX());
-  os_ << ",";
-  handle(node->inY());
-  os_ << ")";
-}
-
-void IrPrinter::handle(const kir::PairSelect* node) {
-  if (!print_inline_) {
-    indent();
-    handle(node->out());
-    os_ << " = ";
-  }
-
-  handle(node->in());
-
-  switch (node->selection()) {
-    case kir::PairSelect::Selection::X:
-      os_ << ".x";
-      break;
-    case kir::PairSelect::Selection::Y:
-      os_ << ".y";
-      break;
-    default:
-      break;
-  }
-}
-
 void IrTransformPrinter::handle(Fusion* f) {
   auto all_vals = f->usedMathVals();
 
@@ -995,6 +1015,8 @@ void IrTransformPrinter::printTransforms(TensorView* tv) {
     }
     os() << ")\n";
   }
+
+  os() << " contiguity: " << tv->domain()->contiguity() << "\n";
 
   auto from = tv->getMaybeRFactorDomain();
   auto all_exp = DependencyCheck::getAllExprsBetween(

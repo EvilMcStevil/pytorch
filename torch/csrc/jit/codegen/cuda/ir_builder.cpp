@@ -60,7 +60,9 @@ IR_BUILDER_INSTANTIATE(ShiftOp)
 IR_BUILDER_INSTANTIATE(GatherOp)
 IR_BUILDER_INSTANTIATE(ViewAsScalar)
 IR_BUILDER_INSTANTIATE(ViewOp)
+IR_BUILDER_INSTANTIATE(FullOp)
 IR_BUILDER_INSTANTIATE(ARangeOp)
+IR_BUILDER_INSTANTIATE(EyeOp)
 IR_BUILDER_INSTANTIATE(UnaryOp)
 IR_BUILDER_INSTANTIATE(BinaryOp)
 IR_BUILDER_INSTANTIATE(TernaryOp)
@@ -71,6 +73,7 @@ IR_BUILDER_INSTANTIATE(WelfordOp)
 IR_BUILDER_INSTANTIATE(LoadStoreOp)
 IR_BUILDER_INSTANTIATE(MmaOp)
 IR_BUILDER_INSTANTIATE(BroadcastOp)
+IR_BUILDER_INSTANTIATE(SqueezeOp)
 
 Val* IrBuilder::newResult(DataType dtype) {
   switch (dtype) {
@@ -210,27 +213,6 @@ Val* IrBuilder::maxExpr(Val* lhs, Val* rhs) {
 
 Val* IrBuilder::minExpr(Val* lhs, Val* rhs) {
   return newArithmeticExpr(BinaryOpType::Min, lhs, rhs);
-}
-
-Val* IrBuilder::swizzle2DIntExpr(
-    Val* in_x,
-    Val* in_y,
-    Val* extent_x,
-    Val* extent_y,
-    Swizzle2DType swizzle_type) {
-  auto result = create<kir::IntPair>();
-
-  create<kir::Swizzle2DInt>(
-      result, in_x, in_y, extent_x, extent_y, swizzle_type);
-  return result;
-}
-
-Val* IrBuilder::pairSelectExpr(Val* in, kir::PairSelect::Selection sel) {
-  auto int_pair = dynamic_cast<kir::IntPair*>(in);
-  TORCH_INTERNAL_ASSERT(int_pair != nullptr);
-  auto result = create<Int>();
-  create<kir::PairSelect>(result, int_pair, sel);
-  return result;
 }
 
 Val* SimplifyingIrBuilder::negExpr(Val* val) {

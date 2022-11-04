@@ -68,7 +68,9 @@ class ComplexDouble;
 class NamedScalar;
 
 // Exprs
+class FullOp;
 class ARangeOp;
+class EyeOp;
 class UnaryOp;
 class BinaryOp;
 class TernaryOp;
@@ -80,6 +82,7 @@ class GroupedWelfordOp;
 class LoadStoreOp;
 class MmaOp;
 class BroadcastOp;
+class SqueezeOp;
 class TransposeOp;
 class ExpandOp;
 class ShiftOp;
@@ -95,7 +98,6 @@ class Swizzle2D;
 namespace kir {
 class Predicate;
 class TensorIndex;
-class IntPair;
 
 class Allocate;
 class BlockSync;
@@ -112,8 +114,6 @@ class GroupedGridWelford;
 class AllocateFusedReduction;
 class InitMagicZero;
 class UpdateMagicZero;
-class Swizzle2DInt;
-class PairSelect;
 
 } // namespace kir
 
@@ -141,10 +141,11 @@ class TORCH_CUDA_CU_API OptOutConstDispatch : public PolymorphicBase {
 
   virtual void handle(const kir::Predicate*);
   virtual void handle(const kir::TensorIndex*);
-  virtual void handle(const kir::IntPair*);
 
   // Exprs
+  virtual void handle(const FullOp* stmt);
   virtual void handle(const ARangeOp* stmt);
+  virtual void handle(const EyeOp* stmt);
   virtual void handle(const UnaryOp* stmt);
   virtual void handle(const BinaryOp* stmt);
   virtual void handle(const TernaryOp* stmt);
@@ -156,6 +157,7 @@ class TORCH_CUDA_CU_API OptOutConstDispatch : public PolymorphicBase {
   virtual void handle(const LoadStoreOp* stmt);
   virtual void handle(const MmaOp* stmt);
   virtual void handle(const BroadcastOp* stmt);
+  virtual void handle(const SqueezeOp* stmt);
 
   virtual void handle(const Split* stmt);
   virtual void handle(const Merge* stmt);
@@ -182,8 +184,6 @@ class TORCH_CUDA_CU_API OptOutConstDispatch : public PolymorphicBase {
   virtual void handle(const kir::GridWelford*);
   virtual void handle(const kir::GroupedGridWelford*);
   virtual void handle(const kir::AllocateFusedReduction*);
-  virtual void handle(const kir::Swizzle2DInt*);
-  virtual void handle(const kir::PairSelect*);
 };
 
 class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
@@ -208,10 +208,11 @@ class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
 
   virtual void handle(kir::Predicate*);
   virtual void handle(kir::TensorIndex*);
-  virtual void handle(kir::IntPair*);
 
   // Exprs
+  virtual void handle(FullOp* stmt);
   virtual void handle(ARangeOp* stmt);
+  virtual void handle(EyeOp* stmt);
   virtual void handle(UnaryOp* stmt);
   virtual void handle(BinaryOp* stmt);
   virtual void handle(TernaryOp* stmt);
@@ -223,6 +224,7 @@ class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
   virtual void handle(LoadStoreOp* stmt);
   virtual void handle(MmaOp* stmt);
   virtual void handle(BroadcastOp* stmt);
+  virtual void handle(SqueezeOp* stmt);
 
   virtual void handle(Split* stmt);
   virtual void handle(Merge* stmt);
@@ -249,8 +251,6 @@ class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
   virtual void handle(kir::GridWelford* stmt);
   virtual void handle(kir::GroupedGridWelford* stmt);
   virtual void handle(kir::AllocateFusedReduction* stmt);
-  virtual void handle(kir::Swizzle2DInt* stmt);
-  virtual void handle(kir::PairSelect* stmt);
 };
 
 class TORCH_CUDA_CU_API OptInConstDispatch : public OptOutConstDispatch {
@@ -316,10 +316,11 @@ class TORCH_CUDA_CU_API OptOutMutator : public PolymorphicBase {
 
   virtual void mutate(kir::Predicate*);
   virtual void mutate(kir::TensorIndex*);
-  virtual void mutate(kir::IntPair*);
 
   // Exprs
+  virtual void mutate(FullOp*);
   virtual void mutate(ARangeOp*);
+  virtual void mutate(EyeOp*);
   virtual void mutate(UnaryOp*);
   virtual void mutate(BinaryOp*);
   virtual void mutate(TernaryOp*);
@@ -331,6 +332,7 @@ class TORCH_CUDA_CU_API OptOutMutator : public PolymorphicBase {
   virtual void mutate(LoadStoreOp*);
   virtual void mutate(MmaOp*);
   virtual void mutate(BroadcastOp*);
+  virtual void mutate(SqueezeOp*);
 
   virtual void mutate(Split*);
   virtual void mutate(Merge*);
@@ -357,8 +359,6 @@ class TORCH_CUDA_CU_API OptOutMutator : public PolymorphicBase {
   virtual void mutate(kir::GridWelford*);
   virtual void mutate(kir::GroupedGridWelford*);
   virtual void mutate(kir::AllocateFusedReduction*);
-  virtual void mutate(kir::Swizzle2DInt*);
-  virtual void mutate(kir::PairSelect*);
 
  protected:
   void removeExpr(IrContainer*, Expr*);

@@ -289,6 +289,8 @@ class TORCH_CUDA_CU_API ComputeAtRootDomainMap : public RootDomainMap {
       const TensorDomain* producer,
       const TensorDomain* consumer) const;
 
+  std::string toString() const;
+
  private:
   //! Returns if key_a and key(td_b, id_b) are mapped to eachother (equivalent),
   //! or are the same key.
@@ -331,8 +333,6 @@ class TORCH_CUDA_CU_API ComputeAtRootDomainMap : public RootDomainMap {
       const std::unordered_set<IterDomain*>& root_dims_to_map,
       bool producer_to_consumer) const override;
 
-  std::string toString() const;
-
  private:
   //! Disjoint set of all mapped <TD, ID> keys to determine axes equivalency
   DisjointSets<DomainKey, DomainKeyHash> eq_set_;
@@ -343,6 +343,10 @@ class TORCH_CUDA_CU_API ComputeAtRootDomainMap : public RootDomainMap {
   //! Broadcast iter domain that does not match dimensions in its produer,
   //! meaning it is a brand new domain in its TensorDomain.
   DomainKeySet new_broadcast_domains_;
+
+  //! Broadcast iter domain that does not match dimensions in its consumer,
+  //! meaning it is a removed domain in its TensorDomain.
+  DomainKeySet removed_broadcast_domains_;
 
   //! Keep track of window axes so that the map function can ignore them.
   std::unordered_set<IterDomain*> window_axes_;
@@ -437,6 +441,8 @@ class TORCH_CUDA_CU_API ComputeAtRootDomainMapBuilder
   void handle(ViewAsScalar* op) override;
 
   void handle(BroadcastOp* op) override;
+
+  void handle(SqueezeOp* op) override;
 
   void handle(TransposeOp* op) override;
 

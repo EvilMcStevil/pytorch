@@ -33,8 +33,7 @@ enum class ValType {
   Scalar,
   NamedScalar,
   Predicate,
-  TensorIndex,
-  IntPair
+  TensorIndex
 };
 
 // Manual - The user provides the Bool value. Predicate generation is bypassed.
@@ -101,10 +100,14 @@ int getVectorSizeFromType(DataType dtype);
 DataType getTypeFromVectorType(DataType dtype);
 // Return the corresponding scalar of a complex type
 DataType getTypeFromComplexType(DataType dtype);
+// Return if the datatype is supported on the current device
+TORCH_CUDA_CU_API bool isSupportedTypeByDevice(DataType dtype);
 
 enum class ExprType {
   Invalid,
+  FullOp,
   ARangeOp,
+  EyeOp,
   UnaryOp,
   BinaryOp,
   TernaryOp,
@@ -112,6 +115,7 @@ enum class ExprType {
   ReductionOp,
   GroupedReductionOp,
   BroadcastOp,
+  SqueezeOp,
   WelfordOp,
   GroupedWelfordOp,
   MmaOp,
@@ -147,8 +151,10 @@ enum class ExprType {
 enum class UnaryOpType {
   Abs,
   Acos,
+  Acosh,
   Address,
   Asin,
+  Asinh,
   Atan,
   Atanh,
   Cast,
@@ -156,9 +162,12 @@ enum class UnaryOpType {
   Cos,
   Cosh,
   Exp,
+  Exp2,
   Expm1,
   Erf,
   Erfc,
+  Erfinv,
+  Erfcinv,
   Floor,
   Frac,
   Gelu,
@@ -244,7 +253,8 @@ enum class BinaryOpType {
 };
 
 enum class RNGOpType {
-  Uniform,
+  Uniform, // Uniform in [0, 1)
+  UniformRange, // Uniform in [low, high]
 };
 
 // Return if output of operator should be a boolean
@@ -315,15 +325,14 @@ enum class IterType {
   VectorComponent
 };
 
-enum class SwizzleType { NoSwizzle, Transpose };
-
 // Used for Iteration Domain mapping modes in ComputeAtMap
-enum class IdMappingMode { PERMISSIVE, EXACT, LOOP };
+enum class IdMappingMode { EXACT, ALMOSTEXACT, LOOP, PERMISSIVE };
 
-static constexpr std::array<IdMappingMode, 3> kIdMappingModes = {
-    IdMappingMode::PERMISSIVE,
+static constexpr std::array<IdMappingMode, 4> kIdMappingModes = {
     IdMappingMode::EXACT,
-    IdMappingMode::LOOP};
+    IdMappingMode::ALMOSTEXACT,
+    IdMappingMode::LOOP,
+    IdMappingMode::PERMISSIVE};
 
 // Used to annotate the special memory intrinsics that a loadstore
 //  op will be lowered to.
@@ -339,7 +348,14 @@ enum class DoubleBufferLoopStage { NotApplicable, Prolog, Main, Epilog };
 //!
 //!  TODO: unify with existing swizzle logic, currently
 //!    doesn't have the same type.
-enum class Swizzle2DType { NoSwizzle = 0, ZShape, Transpose, XOR, Scatter };
+enum class Swizzle2DType {
+  NoSwizzle = 0,
+  ZShape,
+  Transpose,
+  XOR,
+  Scatter,
+  CyclicShift
+};
 
 //! Modes of swizzle, see [Note on swizzle mode].
 enum class SwizzleMode { NoSwizzle = 0, Data, Loop };

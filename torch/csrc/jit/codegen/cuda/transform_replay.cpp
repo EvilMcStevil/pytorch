@@ -227,11 +227,14 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayPasC(
 
   // If this is a reduction operation, we may call transform_replay on the
   // tensor view. When this happens, just return thet target view.
-  if (producer == consumer)
+  if (producer == consumer) {
     return {producer->domain(), producer->nDims()};
+  }
 
-  if (consumer_compute_at_axis < 0)
+  if (consumer_compute_at_axis < 0) {
     consumer_compute_at_axis += (int)consumer->nDims() + 1;
+  }
+
   TORCH_INTERNAL_ASSERT(
       consumer_compute_at_axis >= 0 &&
           (unsigned int)consumer_compute_at_axis <= consumer->nDims(),
@@ -245,8 +248,19 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayPasC(
   // Instead of replaying from the root, lets try to play forward the history of
   // producer if they match ops on consumer. Enforce if we modify an rfactor
   // axis that those ops must match.
+  // Swizzles should not be skipped in the BestEffortReplay matching in this
+  //  case. If a swizzle mismatch is found, by default BestEffortReplay forwards
+  //  the mapping to the swizzle outputs, which would help in the case of CaMap
+  //  build but in the case of transform replay, would need to do the replay
+  //  from the inputs of the swizzles instead of the outputs, and therefore
+  //  should not skip swizzles in here.
   auto forward_replay = BestEffortReplay::replayPasC(
-      producer, consumer, consumer_compute_at_axis, root_map);
+      producer,
+      consumer,
+      consumer_compute_at_axis,
+      root_map,
+      false,
+      !replay_swizzle);
 
   // Make a new map based on all the leaves resulting from best effort replay
   id_map forwarded_replay_map;
@@ -432,7 +446,8 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
     const TensorView* consumer,
     const TensorView* producer,
     int producer_compute_at_axis,
-    const RootDomainMap& root_map) {
+    const RootDomainMap& root_map,
+    bool replay_swizzle) {
   FUSER_PERF_SCOPE("TransformReplay::replayCasP");
 
   // If this is a reduction operation, we may call transform_replay on the same
@@ -440,13 +455,17 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
   if (consumer == producer)
     return {consumer->domain(), consumer->nDims()};
 
-  if (producer_compute_at_axis < 0)
+  if (producer_compute_at_axis < 0) {
     producer_compute_at_axis += (int)producer->nDims() + 1;
+  }
 
   TORCH_INTERNAL_ASSERT(
       producer_compute_at_axis >= 0 &&
           (unsigned int)producer_compute_at_axis <= producer->nDims(),
-      "Invalid axis in transform replayCasP.");
+      "Invalid axis in transform replayCasP. Consumer: ",
+      consumer->toString(),
+      " Producer: ",
+      producer->toString());
 
   // producer ids we need to match in consumer
   std::vector<IterDomain*> producer_CA_ids(
@@ -457,8 +476,16 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
   // Instead of replaying from the root, lets try to forward the history of
   // consumer if they match ops on producer. Enforce if we modify an rfactor
   // axis that those ops match.
+  // Note on skip_swizzles:
+  //  Similar constraints apply in replayPasC. See the corresponding
+  // notes there on not skipping swizzles in the matching here.
   BestEffortReplay forward_replay = BestEffortReplay::replayCasP(
-      consumer, producer, producer_compute_at_axis, root_map);
+      consumer,
+      producer,
+      producer_compute_at_axis,
+      root_map,
+      false,
+      !replay_swizzle);
 
   // Track dangling leaves which can be produced in
   // BestEffortReplay::replayCasP these don't have any equivalent in producer
@@ -476,7 +503,7 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
 
   // Replay producer dimensions.
   ReplayTransformations replay_CasP(
-      producer_CA_ids, forwarded_replay_map, false);
+      producer_CA_ids, forwarded_replay_map, replay_swizzle);
 
   auto leaf_ids(replay_CasP.getUnorderedLeafIDs());
 
@@ -485,11 +512,18 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
   std::vector<IterDomain*> needed_dims;
   for (auto p_id : producer_CA_ids) {
     auto it = replay_CasP.getReplay().find(p_id);
-    TORCH_INTERNAL_ASSERT(
-        it != replay_CasP.getReplay().end(),
-        "Could not find axis, ",
-        p_id,
-        ", requested in replay.");
+    if (it == replay_CasP.getReplay().end()) {
+      // skip squeezed broadcast
+      TORCH_INTERNAL_ASSERT(
+          p_id->isBroadcast(),
+          "Could not find axis, ",
+          p_id,
+          ", requested in replaying consumer ",
+          consumer,
+          " as producer ",
+          producer);
+      continue;
+    }
     TORCH_INTERNAL_ASSERT(
         leaf_ids.find(it->second) != leaf_ids.end(),
         "Replayed id to match producer id ",
@@ -573,11 +607,15 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
   // Add axes in (1)
   for (auto p_id : producer_CA_ids) {
     auto it = replay_CasP.getReplay().find(p_id);
-    TORCH_INTERNAL_ASSERT(
-        it != replay_CasP.getReplay().end(),
-        "Could not find axis, ",
-        p_id,
-        ", requested in replay.");
+    if (it == replay_CasP.getReplay().end()) {
+      // skip squeezed broadcast
+      TORCH_INTERNAL_ASSERT(
+          p_id->isBroadcast(),
+          "Could not find axis, ",
+          p_id,
+          ", requested in replay.");
+      continue;
+    }
     new_IDs.push_back(it->second);
     used_IDs.emplace(it->second);
   }
@@ -600,6 +638,8 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
     }
   }
 
+  unsigned int consumer_compute_at_axis = new_IDs.size();
+
   // Add axes in (3)
   for (auto id : consumer->domain()->domain()) {
     if (consumer_replayed_leaves.getUnorderedLeafIDs().find(id) !=
@@ -612,9 +652,11 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
   }
 
   // Add axes in (4)
-  for (auto id : consumer_replayed_leaves.getLeafIDs())
-    if (used_IDs.find(id) == used_IDs.end())
+  for (auto id : consumer_replayed_leaves.getLeafIDs()) {
+    if (used_IDs.find(id) == used_IDs.end()) {
       new_IDs.push_back(id);
+    }
+  }
 
   TensorDomain* replayed = IrBuilder::create<TensorDomain>(
       consumer->container(),
@@ -623,7 +665,7 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
       new_IDs,
       consumer->domain()->contiguity());
 
-  return {replayed, producer_CA_ids.size()};
+  return {replayed, consumer_compute_at_axis};
 }
 
 // replay Producer as Consumer
@@ -641,10 +683,12 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayPasC(
 std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
     const TensorView* consumer,
     const TensorView* producer,
-    int compute_at_axis) {
+    int compute_at_axis,
+    bool replay_swizzle) {
   // Use the pairwise root map as a default mapper
   PairwiseRootDomainMap root_map(producer, consumer);
-  return replayCasP(consumer, producer, compute_at_axis, root_map);
+  return replayCasP(
+      consumer, producer, compute_at_axis, root_map, replay_swizzle);
 }
 
 // In a PasC replay, we want the producer to exactly match the consumer:
@@ -683,7 +727,7 @@ int TransformReplay::getMatchedLeafPosWithoutReplayPasC(
 
   auto disjoint_sets =
       BestEffortReplay::replayPasC(producer, consumer, -1, pairwise_map)
-          .getDisjointSets();
+          .getIterDomainEquivalence();
 
   int mismatched_consumer_pos = 0;
   int mismatched_producer_pos = 0;
@@ -756,7 +800,7 @@ int TransformReplay::getMatchedLeafPosWithoutReplayCasP(
 
   auto disjoint_sets =
       BestEffortReplay::replayPasC(producer, consumer, -1, pairwise_map)
-          .getDisjointSets();
+          .getIterDomainEquivalence();
 
   int mismatched_producer_pos = 0;
   int mismatched_consumer_pos = 0;

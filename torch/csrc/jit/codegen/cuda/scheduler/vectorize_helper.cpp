@@ -4,6 +4,7 @@
 #include <torch/csrc/jit/codegen/cuda/contiguity.h>
 #include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
+#include <torch/csrc/jit/codegen/cuda/lower_divisible_split.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/registry.h>
 
 #include <c10/util/irange.h>
@@ -57,8 +58,8 @@ IterDomain* mergeInnermostDomains(
   bool is_merge_done = false;
   for (const auto i : c10::irange(num_merged_domains)) {
     auto id = domain.at(ndims - 1 - i);
-    // broadcast and trivial reductions are ignored
-    if (id->isBroadcast() || id->isTrivialReduction()) {
+    // broadcast are ignored
+    if (id->isBroadcast()) {
       continue;
     }
     if (merged_id == nullptr) {
@@ -73,6 +74,10 @@ IterDomain* mergeInnermostDomains(
   return is_merge_done ? merged_id : nullptr;
 }
 
+namespace {
+//! Collect maximum vectorization word size of a tensor whose
+//! innermost domain is leaf_merged_domain. Contig merging is taken
+//! into account to expand vectorization if possible.
 size_t collectMaxVectorizeSizeWithContigMerge(
     TensorView* tv,
     IterDomain* leaf_merged_domain,
@@ -84,13 +89,17 @@ size_t collectMaxVectorizeSizeWithContigMerge(
 
   // Assume no halo-related expression appears in the fusion. No
   // broadcast is merged, so indexability can be assumed to be true.
+  // This is expensive, as ContigIDs builds other things like CAMap,
+  // HaloInfo, and ConcreteBroadcast info. We should explicitly build and reuse
+  // these as they're compile time information.
   ContigIDs contigIds(
       {leaf_merged_domain},
       tv->getMaybeRFactorDomain(),
       tv->domain()->contiguity(),
       {},
       {},
-      true,
+      getAllDivisibleSplits(tv->fusion()),
+      {},
       true);
 
   auto innermost_root_id = tv->getMaybeRFactorDomain().back();
@@ -143,6 +152,7 @@ size_t collectMaxVectorizeSizeWithContigMerge(
 
   return vector_size;
 }
+} // namespace
 
 //! Attempt to expand vectorized domains to contig merged domains. Break point
 //! identifies the point in which you can't propagate contiguous merges. For

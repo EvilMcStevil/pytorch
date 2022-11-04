@@ -8,6 +8,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_builder.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
+#include <torch/csrc/jit/codegen/cuda/ops/alias.h>
 #include <torch/csrc/jit/codegen/cuda/type.h>
 #include <torch/csrc/jit/codegen/cuda/type_promotion.h>
 #include <cfloat>
@@ -247,7 +248,7 @@ TensorView* newOutputTV(const std::vector<Val*>& vals, DataType dtype) {
 
   return IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       dtype);
 }
 
@@ -281,8 +282,9 @@ Val* newValLike(Val* val, DataType dtype) {
 
   const ValType vtype = val->getValType().value();
 
-  if (vtype == ValType::TensorView)
+  if (vtype == ValType::TensorView) {
     return newOutputTV({val}, dtype);
+  }
 
   return newScalar(vtype, dtype);
 }
@@ -449,8 +451,101 @@ TensorView* rand(const std::vector<Val*>& shape, DataType dtype) {
                  .contiguity(std::vector<bool>(n, true))
                  .shape(shape)
                  .build();
-  IrBuilder::create<RNGOp>(RNGOpType::Uniform, out);
+  IrBuilder::create<RNGOp>(RNGOpType::Uniform, out, dtype);
   return out;
+}
+
+// TENSOR FACTORIES
+TensorView* uniform(
+    const std::vector<Val*>& shape,
+    Val* low,
+    Val* high,
+    DataType dtype) {
+  auto n = shape.size();
+  auto out = TensorViewBuilder()
+                 .ndims(n)
+                 .dtype(dtype)
+                 .contiguity(std::vector<bool>(n, true))
+                 .shape(shape)
+                 .build();
+  IrBuilder::create<RNGOp>(
+      RNGOpType::UniformRange, out, dtype, std::vector<Val*>{low, high});
+  return out;
+}
+
+TensorView* rand_like(TensorView* tv) {
+  TORCH_CHECK(
+      isFloatingPointType(tv->dtype()),
+      "input must have floating point type, but got ",
+      tv->dtype());
+  std::vector<Val*> shape;
+  auto dom = TensorDomain::noReductions(tv->getMaybeRFactorDomain());
+  shape.reserve(dom.size());
+  for (auto id : dom) {
+    shape.emplace_back(id->getMaybeExpandedExtent());
+  }
+  return rand(shape, tv->dtype());
+}
+
+Val* rand_like(Val* v) {
+  return rand_like(v->as<TensorView>());
+}
+
+TensorView* full(
+    const std::vector<Val*>& shape,
+    Val* fill_value,
+    DataType dtype) {
+  auto n = shape.size();
+  auto out = TensorViewBuilder()
+                 .ndims(n)
+                 .dtype(dtype)
+                 .contiguity(std::vector<bool>(n, true))
+                 .shape(shape)
+                 .build();
+  IrBuilder::create<FullOp>(out, fill_value, dtype);
+  return out;
+}
+
+TensorView* full_like(TensorView* tv, Val* fill_value, DataType dtype) {
+  std::vector<Val*> shape;
+  auto dom = TensorDomain::noReductions(tv->getMaybeRFactorDomain());
+  shape.reserve(dom.size());
+  for (auto id : dom) {
+    shape.emplace_back(id->getMaybeExpandedExtent());
+  }
+  return full(shape, fill_value, dtype);
+}
+
+TensorView* full_like(TensorView* tv, Val* fill_value) {
+  return full_like(tv, fill_value, tv->dtype());
+}
+
+Val* full_like(Val* v, Val* fill_value) {
+  return full_like(v->as<TensorView>(), fill_value);
+}
+
+TensorView* zeros(const std::vector<Val*>& shape, DataType dtype) {
+  return full(shape, FusionGuard::getCurFusion()->zeroVal(), dtype);
+}
+
+TensorView* zeros_like(TensorView* tv) {
+  return full_like(tv, FusionGuard::getCurFusion()->zeroVal());
+}
+
+Val* zeros_like(Val* v) {
+  return zeros_like(v->as<TensorView>());
+}
+
+TensorView* ones(const std::vector<Val*>& shape, DataType dtype) {
+  return full(shape, FusionGuard::getCurFusion()->oneVal(), dtype);
+}
+
+TensorView* ones_like(TensorView* tv) {
+  return full_like(tv, FusionGuard::getCurFusion()->oneVal());
+}
+
+Val* ones_like(Val* v) {
+  return ones_like(v->as<TensorView>());
 }
 
 TensorView* arange(Val* end, DataType dtype) {
@@ -471,15 +566,34 @@ TensorView* arange(Val* start, Val* end, Val* step, DataType dtype) {
     end = castOp(DataType::Double, end);
     step = castOp(DataType::Double, step);
   }
-  auto size = castOp(DataType::Int, ceilDiv(sub(end, start), step));
+  // Make sure no negative value is passed to ceilDiv as the device
+  // implementation of ceilDiv assumes positive inputs
+  auto size = castOp(DataType::Int, ceilDiv(abs(sub(end, start)), abs(step)));
   auto out = TensorViewBuilder()
                  .ndims(1)
                  .dtype(dtype)
                  .contiguity({true})
                  .shape({size})
                  .build();
-  IrBuilder::create<ARangeOp>(out, start, end, step);
+  IrBuilder::create<ARangeOp>(out, start, end, step, dtype);
   return out;
+}
+
+TensorView* eye(Val* rows, Val* cols, DataType dtype) {
+  TORCH_CHECK(rows->getDataType() == DataType::Int, "rows must have type Int");
+  TORCH_CHECK(cols->getDataType() == DataType::Int, "cols must have type Int");
+  auto out = TensorViewBuilder()
+                 .ndims(2)
+                 .dtype(dtype)
+                 .contiguity({true, true})
+                 .shape(std::vector<Val*>{rows, cols})
+                 .build();
+  IrBuilder::create<EyeOp>(out, dtype);
+  return out;
+}
+
+TensorView* eye(Val* size, DataType dtype) {
+  return eye(size, size, dtype);
 }
 
 // UNARY OPERATIONS
@@ -503,23 +617,6 @@ NVFUSER_DEFINE_UNARY_OP(silu, Silu)
 NVFUSER_DEFINE_UNARY_OP(trunc, Trunc)
 NVFUSER_DEFINE_UNARY_OP(print, Print)
 #undef NVFUSER_DEFINE_UNARY_OP
-
-TensorView* randlike(TensorView* v) {
-  TORCH_CHECK(
-      isFloatingPointType(v->dtype()),
-      "input must have floating point type, but got ",
-      v->dtype());
-  std::vector<Val*> shape;
-  shape.reserve(v->getMaybeRFactorDomain().size());
-  for (auto id : v->getMaybeRFactorDomain()) {
-    shape.emplace_back(id->getMaybeExpandedExtent());
-  }
-  return rand(shape, v->dtype());
-}
-
-Val* randlike(Val* v) {
-  return randlike(v->as<TensorView>());
-}
 
 Val* bitwise_not(Val* v) {
   TORCH_CHECK(
@@ -607,15 +704,20 @@ TensorView* imag(TensorView* tv) {
   }
 
 NVFUSER_DEFINE_UNARY_FLOAT_OP(acos, Acos)
+NVFUSER_DEFINE_UNARY_FLOAT_OP(acosh, Acosh)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(asin, Asin)
+NVFUSER_DEFINE_UNARY_FLOAT_OP(asinh, Asinh)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(atan, Atan)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(atanh, Atanh)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(cos, Cos)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(cosh, Cosh)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(exp, Exp)
+NVFUSER_DEFINE_UNARY_FLOAT_OP(exp2, Exp2)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(expm1, Expm1)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(erf, Erf)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(erfc, Erfc)
+NVFUSER_DEFINE_UNARY_FLOAT_OP(erfinv, Erfinv)
+NVFUSER_DEFINE_UNARY_FLOAT_OP(erfcinv, Erfcinv)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(lgamma, Lgamma)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(log, Log)
 NVFUSER_DEFINE_UNARY_FLOAT_OP(log10, Log10)
@@ -855,6 +957,7 @@ NVFUSER_DEFINE_BINARY_FLOAT_OP(atan2, Atan2)
   }
 
 // Integer binary ops
+NVFUSER_DEFINE_BINARY_CAST_OP(cpp_div, Div)
 NVFUSER_DEFINE_BINARY_CAST_OP(mod, Mod)
 NVFUSER_DEFINE_BINARY_CAST_OP(ceilDiv, CeilDiv)
 NVFUSER_DEFINE_BINARY_CAST_OP(add, Add)
@@ -1043,7 +1146,7 @@ static TensorView* newForReduction(
   }
 
   TensorDomain* td = IrBuilder::create<TensorDomain>(
-      new_domain, std::vector<bool>(new_domain.size(), true));
+      new_domain, TensorDomain::getContiguousContiguity(new_domain));
 
   data_type =
       data_type == DataType::Null ? tv->getDataType().value() : data_type;
@@ -1061,20 +1164,26 @@ TensorView* reductionOpZeroDimTensor(TensorView* inp) {
 
 } // namespace
 
-TensorView* reductionOp(
+TensorView* reductionOpRaw(
     BinaryOpType reduction_op_type,
     const std::vector<int>& axes,
     Val* init,
     TensorView* tv,
     bool keep_dim /*=false*/,
     DataType dtype /* DataType::Null */) {
+  // TODO: should we use squeeze for size 1 broadcast dim?
+
   TORCH_CHECK(
       init->isConstScalar(),
       "Cannot create a reduction operation where the initial value is not a const scalar.");
 
   TORCH_CHECK(
       TensorDomain::sameAs(tv->getMaybeRFactorDomain(), tv->domain()->domain()),
-      "Reducing a tensor once it's gone under transformations is not permitted at this time. Please set reductions before calling split/merge/computeAt.");
+      "Reducing a tensor once it's gone under transformations is not permitted at this time. \n",
+      "Please set reductions before calling split/merge/computeAt.\n  RFactor: ",
+      tv->getMaybeRFactorDomain(),
+      "\n  Domain: ",
+      tv->domain()->toString());
 
   TORCH_CHECK(axes.size() > 0, "No reduction axis specified");
 
@@ -1092,7 +1201,7 @@ TensorView* reductionOp(
 
     TORCH_CHECK(
         axis >= 0 && axis < ndims,
-        "Reduction on invalid axis, recieved: ",
+        "Reduction on invalid axis, received: ",
         axis,
         " however tensor view only has ",
         ndims,
@@ -1122,6 +1231,137 @@ TensorView* reductionOp(
       is_broadcast.at(axis) = true;
     }
     out = broadcast(out, is_broadcast);
+  }
+  return out;
+}
+
+namespace {
+
+TensorView* maybeFullInsteadOfReduction(
+    const std::vector<unsigned int>& axes, // sorted
+    Val* init,
+    TensorView* tv,
+    bool keep_dim,
+    DataType dtype) {
+  auto tv_root = TensorDomain::noReductions(tv->getMaybeRFactorDomain());
+  const int ndims = tv_root.size();
+  for (auto i : axes) {
+    if (tv_root.at(i)->extent()->isZeroInt()) {
+      std::vector<IterDomain*> new_root;
+      new_root.reserve(keep_dim ? ndims : ndims - axes.size());
+      int cur_pos = 0;
+      for (auto j : c10::irange(ndims)) {
+        bool is_reduction = cur_pos < axes.size() && axes[cur_pos] == j;
+        if (is_reduction) {
+          cur_pos++;
+          if (keep_dim) {
+            auto id = IterDomainBuilder(
+                          tv->fusion()->zeroVal(), tv->fusion()->oneVal())
+                          .iter_type(IterType::Broadcast)
+                          .build();
+            new_root.push_back(id);
+          }
+        } else {
+          new_root.push_back(tv_root.at(j)->cloneWithoutRFactor());
+        }
+      }
+
+      TensorDomain* td = IrBuilder::create<TensorDomain>(
+          new_root, TensorDomain::getContiguousContiguity(new_root));
+
+      dtype = dtype == DataType::Null ? tv->getDataType().value() : dtype;
+      auto output = IrBuilder::create<TensorView>(td, dtype);
+      IrBuilder::create<FullOp>(output, init, dtype);
+      return output;
+    }
+  }
+  return nullptr;
+}
+
+} // namespace
+
+TensorView* reductionOp(
+    BinaryOpType reduction_op_type,
+    const std::vector<int>& axes,
+    Val* init,
+    TensorView* tv,
+    bool keep_dim /*=false*/,
+    DataType dtype /* DataType::Null */) {
+  TORCH_CHECK(
+      init->isConstScalar(),
+      "Cannot create a reduction operation where the initial value is not a const scalar.");
+
+  TORCH_CHECK(
+      TensorDomain::sameAs(tv->getMaybeRFactorDomain(), tv->domain()->domain()),
+      "Reducing a tensor once it's gone under transformations is not permitted at this time. \n",
+      "Please set reductions before calling split/merge/computeAt.\n  RFactor: ",
+      tv->getMaybeRFactorDomain(),
+      "\n  Domain: ",
+      tv->domain()->toString());
+
+  TORCH_CHECK(axes.size() > 0, "No reduction axis specified");
+
+  auto tv_root = TensorDomain::noReductions(tv->getMaybeRFactorDomain());
+  const int ndims = tv_root.size();
+
+  // PyTorch allows reduction of 0-dim tensors
+  if (ndims == 0) {
+    return reductionOpZeroDimTensor(tv);
+  }
+
+  std::vector<unsigned int> uint_axes;
+  for (int axis : axes) {
+    if (axis < 0) {
+      axis += ndims;
+    }
+
+    TORCH_CHECK(
+        axis >= 0 && axis < ndims,
+        "Reduction on invalid axis, received: ",
+        axis,
+        " however tensor view only has ",
+        ndims,
+        " non-reduction dims.");
+    uint_axes.push_back((unsigned int)axis);
+  }
+  std::sort(uint_axes.begin(), uint_axes.end());
+
+  // In PyTorch, reduction of a size-0 tensor is effectively creating a tensor
+  // filled with the init value.
+  auto maybe_full =
+      maybeFullInsteadOfReduction(uint_axes, init, tv, keep_dim, dtype);
+  if (maybe_full != nullptr) {
+    return maybe_full;
+  }
+
+  std::vector<int> reduction_axes;
+  std::vector<bool> is_trivial_reduction(ndims, false);
+  int offset = 0;
+  for (unsigned int axis : uint_axes) {
+    auto id = tv_root[axis];
+    is_trivial_reduction[axis] = id->isBroadcast() &&
+        !id->hasExpandedExtent() && id->extent()->isOneInt();
+    if (!is_trivial_reduction[axis]) {
+      reduction_axes.push_back(axis + offset);
+    } else if (!keep_dim) {
+      offset--;
+    }
+  }
+
+  TensorView* squeezed = tv;
+  if (offset < 0) {
+    squeezed = squeeze(tv, is_trivial_reduction);
+  }
+
+  TensorView* out = squeezed;
+  if (!reduction_axes.empty()) {
+    return reductionOpRaw(
+        reduction_op_type, reduction_axes, init, squeezed, keep_dim, dtype);
+  }
+
+  if (out == tv) {
+    // makes sure that a new tensor is created
+    return set(tv);
   }
   return out;
 }
@@ -1236,7 +1476,7 @@ TensorView* broadcast(
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       inp->getDataType().value());
   IrBuilder::create<BroadcastOp>(out_tensor, inp, is_broadcast_dim);
   return out_tensor;
@@ -1306,7 +1546,7 @@ TensorView* expand(TensorView* inp, const std::vector<Val*>& expanded_sizes) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       inp->getDataType().value());
   if (!expanded) {
     IrBuilder::create<UnaryOp>(UnaryOpType::Set, out_tensor, inp);
@@ -1366,7 +1606,7 @@ TensorView* expand_as(TensorView* inp, TensorView* other) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       inp->getDataType().value());
   if (!expanded) {
     IrBuilder::create<UnaryOp>(UnaryOpType::Set, out_tensor, inp);
@@ -1376,15 +1616,19 @@ TensorView* expand_as(TensorView* inp, TensorView* other) {
   return out_tensor;
 }
 
-WelfordResult Welford(
+WelfordResult WelfordRaw(
     TensorView* tv,
     const std::vector<int>& axes,
     TensorView* init_avg,
     TensorView* init_var,
     Int* init_N) {
   TORCH_CHECK(
-      TensorDomain::sameAs(tv->getRootDomain(), tv->domain()->domain()),
-      "Reducing a tensor once it's gone under transformations is not permitted at this time. Please set reductions before calling split/merge/computeAt.");
+      TensorDomain::sameAs(tv->getMaybeRFactorDomain(), tv->domain()->domain()),
+      "Reducing a tensor once it's gone under transformations is not permitted at this time. \n",
+      "Please set reductions before calling split/merge/computeAt.\n  RFactor: ",
+      tv->getMaybeRFactorDomain(),
+      "\n  Domain: ",
+      tv->domain()->toString());
 
   TORCH_CHECK(tv->nDims() > 0, "Tried to reduce a 0-dim tensor");
   TORCH_CHECK(axes.size() > 0, "No reduction axis specified");
@@ -1427,7 +1671,7 @@ WelfordResult Welford(
 
     TORCH_CHECK(
         axis >= 0 && axis < ndims,
-        "Reduction on invalid axis, recieved: ",
+        "Reduction on invalid axis, received: ",
         axis,
         " however tensor view only has ",
         ndims,
@@ -1444,15 +1688,103 @@ WelfordResult Welford(
   IrBuilder::create<WelfordOp>(
       out_avg,
       out_var,
-      out_N, /*out var/avg/count */
-      tv, /*in var/avg/count */
+      out_N, /*out avg/var/count */
+      tv, /*in avg/var/count */
       FusionGuard::getCurFusion()->zeroVal(),
       FusionGuard::getCurFusion()->oneVal(),
       init_avg_val,
       init_var_val,
-      init_N); /*init var/avg/count */
+      init_N); /*init avg/var/count */
 
   return WelfordResult(out_avg, out_var, out_N);
+}
+
+WelfordResult Welford(
+    TensorView* tv,
+    const std::vector<int>& axes,
+    TensorView* init_avg,
+    TensorView* init_var,
+    Int* init_N) {
+  TORCH_CHECK(
+      TensorDomain::sameAs(tv->getMaybeRFactorDomain(), tv->domain()->domain()),
+      "Reducing a tensor once it's gone under transformations is not permitted at this time. \n",
+      "Please set reductions before calling split/merge/computeAt.\n  RFactor: ",
+      tv->getMaybeRFactorDomain(),
+      "\n  Domain: ",
+      tv->domain()->toString());
+
+  TORCH_CHECK(tv->nDims() > 0, "Tried to reduce a 0-dim tensor");
+  TORCH_CHECK(axes.size() > 0, "No reduction axis specified");
+
+  // Check and collect reduction axes
+  std::vector<unsigned int> uint_axes;
+  auto tv_root = tv->domain()->noReductions();
+  const int ndims = tv_root.size();
+  for (int axis : axes) {
+    if (axis < 0) {
+      axis += ndims;
+    }
+
+    TORCH_CHECK(
+        axis >= 0 && axis < ndims,
+        "Reduction on invalid axis, received: ",
+        axis,
+        " however tensor view only has ",
+        ndims,
+        " non-reduction dims.");
+
+    uint_axes.push_back((unsigned int)axis);
+  }
+  std::sort(uint_axes.begin(), uint_axes.end());
+
+  // Squeeze before reduction
+  std::vector<int> reduction_axes;
+  std::vector<bool> is_trivial_reduction(ndims, false);
+  int offset = 0;
+  for (unsigned int axis : uint_axes) {
+    auto id = tv_root[axis];
+    is_trivial_reduction[axis] = id->isBroadcast() &&
+        !id->hasExpandedExtent() && id->extent()->isOneInt();
+    if (!is_trivial_reduction[axis]) {
+      reduction_axes.push_back(axis + offset);
+    } else {
+      offset--;
+    }
+  }
+
+  TensorView* squeezed = tv;
+  if (offset < 0) {
+    squeezed = squeeze(tv, is_trivial_reduction);
+  }
+
+  if (!reduction_axes.empty()) {
+    return WelfordRaw(squeezed, reduction_axes, init_avg, init_var, init_N);
+  }
+
+  // if squeeze only
+
+  if (init_N == nullptr) {
+    init_N = FusionGuard::getCurFusion()->zeroVal();
+  }
+  TensorView* out_N = full_like(
+      squeezed,
+      add(init_N, FusionGuard::getCurFusion()->oneVal()),
+      DataType::Index);
+
+  // Initial values for welford op are tensors, so their dims have to match the
+  // output dim
+  if (!init_N->isZeroInt()) {
+    TORCH_CHECK(
+        init_var != nullptr,
+        "welford op: init variance value need to be provided");
+    TORCH_CHECK(
+        squeezed->getRootDomain().size() == init_var->getRootDomain().size(),
+        "welford op: initial tensor mismatch");
+    return WelfordResult(squeezed, init_var, out_N);
+  } else {
+    return WelfordResult(
+        squeezed, full_like(squeezed, IrBuilder::create<Double>(0)), out_N);
+  }
 }
 
 WelfordResult::WelfordResult(
@@ -1460,6 +1792,11 @@ WelfordResult::WelfordResult(
     TensorView* in_var_sum,
     TensorView* in_n)
     : avg(in_avg), var_sum(in_var_sum), n(in_n) {
+  if (avg->definition()->isA<SqueezeOp>()) {
+    // For a squeeze-only welford, the definition of outputs does not have to be
+    // the same.
+    return;
+  }
   TORCH_INTERNAL_ASSERT(avg->definition()->sameAs(var_sum->definition()));
   TORCH_INTERNAL_ASSERT(avg->definition()->sameAs(n->definition()));
 }
@@ -1917,7 +2254,7 @@ TensorView* shift(
 
   out = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_dom, std::vector<bool>(out_dom.size(), true)),
+          out_dom, TensorDomain::getContiguousContiguity(out_dom)),
       inp->getDataType().value());
 
   IrBuilder::create<ShiftOp>(out, inp, offsets, pad_width);
@@ -1941,7 +2278,7 @@ TensorDomain* generateTensorDomainWithStrides(
        std::all_of(
            strides.begin(), strides.end(), [](int s) { return s == 1; }))) {
     return IrBuilder::create<TensorDomain>(
-        root_domains, std::vector<bool>(root_domains.size(), true));
+        root_domains, TensorDomain::getContiguousContiguity(root_domains));
   }
 
   for (const auto i : c10::irange(root_domains.size())) {
@@ -1958,13 +2295,11 @@ TensorDomain* generateTensorDomainWithStrides(
     strided_domains.push_back(split_out.second);
   }
 
-  auto contig_vector_size = strided_domains.size();
-
   auto strided_td = IrBuilder::create<TensorDomain>(
       root_domains,
       strided_domains,
       strided_domains,
-      std::vector<bool>(contig_vector_size, true));
+      TensorDomain::getContiguousContiguity(strided_domains));
 
   return strided_td;
 }
@@ -2107,7 +2442,7 @@ TORCH_CUDA_CU_API TensorView* viewAsScalar(TensorView* inp) {
   auto out = IrBuilder::create<TensorView>(
       inp->container(),
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       out_type);
 
   IrBuilder::create<ViewAsScalar>(inp->container(), out, inp, id);
@@ -2176,7 +2511,7 @@ static TensorView* newForMma(
   }
 
   TensorDomain* td = IrBuilder::create<TensorDomain>(
-      new_domain, std::vector<bool>(new_domain.size(), true));
+      new_domain, TensorDomain::getContiguousContiguity(new_domain));
 
   return IrBuilder::create<TensorView>(td, data_type);
 }
@@ -2228,7 +2563,7 @@ TensorView* fusedMultiplySum(
 
     TORCH_CHECK(
         axis >= 0 && axis < ndims,
-        "Reduction on invalid axis, recieved: ",
+        "Reduction on invalid axis, received: ",
         axis,
         " however tensor view only has ",
         ndims,

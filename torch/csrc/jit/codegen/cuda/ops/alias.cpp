@@ -36,16 +36,14 @@ TensorView* applyViewTransforms(
     TensorView* orig_tv,
     TensorView* post_reduce_tv,
     const AnalyzeViewResult& view_analysis) {
+  TORCH_INTERNAL_ASSERT(orig_tv != nullptr, "Input is invalid.");
+  TORCH_INTERNAL_ASSERT(post_reduce_tv != nullptr, "Input is invalid.");
   TORCH_INTERNAL_ASSERT(
       !post_reduce_tv->hasComputeAt(),
       "Cannot modify rfactor domain after compute at has been set.");
 
   TORCH_INTERNAL_ASSERT(
       post_reduce_tv->nDims() > 0, "Tried to view a 0-dim TensorView");
-
-  TORCH_CHECK(
-      !post_reduce_tv->domain()->hasRFactor(),
-      "Cannot call view on the same TensorView twice.");
 
   TORCH_INTERNAL_ASSERT(!view_analysis.transforms.empty());
 
@@ -62,6 +60,7 @@ TensorView* applyViewTransforms(
 } // namespace
 
 TensorView* view(TensorView* x, DataType dtype) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   if (x->getDataType() == dtype) {
     return x;
   }
@@ -81,6 +80,7 @@ TensorView* view(
     TensorView* x,
     const std::vector<int64_t>& original_sizes,
     const std::vector<int64_t>& new_sizes) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   TORCH_INTERNAL_ASSERT(
       TensorDomain::noReductions(x->getMaybeRFactorDomain()).size() ==
       original_sizes.size());
@@ -89,16 +89,16 @@ TensorView* view(
 
   auto view_analysis = analyzeView(x, original_sizes, new_sizes);
 
-  auto reduction = (!view_analysis.trivial_reduction_axes.empty())
-      ? sum(x,
-            view_analysis.trivial_reduction_axes,
-            false /* keep_dim */,
-            x->getDataType().value())
+  auto squeezed = std::any_of(
+                      view_analysis.squeeze_axes.begin(),
+                      view_analysis.squeeze_axes.end(),
+                      [](bool s) { return s; })
+      ? squeeze(x, view_analysis.squeeze_axes)
       : x;
 
   auto view = view_analysis.transforms.empty()
-      ? reduction
-      : applyViewTransforms(x, reduction, view_analysis);
+      ? squeezed
+      : applyViewTransforms(x, squeezed, view_analysis);
 
   auto bcasted = std::any_of(
                      view_analysis.broadcast_axes.begin(),
@@ -111,6 +111,7 @@ TensorView* view(
 }
 
 TensorView* flatten(TensorView* x, int64_t start_dim, int64_t end_dim) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   auto inp_domain = TensorDomain::noReductions(x->getMaybeRFactorDomain());
   if (start_dim < 0) {
     start_dim += inp_domain.size();
@@ -139,7 +140,46 @@ TensorView* flatten(TensorView* x, int64_t start_dim, int64_t end_dim) {
   return out;
 }
 
+TensorView* squeeze(TensorView* x, const std::vector<bool>& to_squeeze) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
+  auto x_dom = x->domain()->noReductions();
+  const auto ndims = static_cast<int>(x_dom.size());
+
+  TORCH_INTERNAL_ASSERT(
+      ndims == to_squeeze.size(),
+      "Invalid to_squeeze for squeeze: ",
+      to_squeeze,
+      ". Input tensor: ",
+      x->toString());
+
+  std::vector<IterDomain*> out_domain;
+  for (const auto idx : c10::irange(ndims)) {
+    auto id = x_dom[idx];
+    if (to_squeeze[idx]) {
+      TORCH_CHECK(
+          id->isBroadcast(), "Can not squeeze non-broadcasting dimension(s).");
+      TORCH_CHECK(
+          !id->hasExpandedExtent(), "Can not squeeze expanded dimension(s).");
+      TORCH_CHECK(
+          id->extent()->isOneInt(),
+          "Can not squeeze dimension(s) with size != 1.");
+    } else {
+      out_domain.push_back(id->cloneWithoutRFactor());
+    }
+  }
+
+  auto out = IrBuilder::create<TensorView>(
+      IrBuilder::create<TensorDomain>(
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+      *x->getDataType());
+
+  IrBuilder::create<SqueezeOp>(x->container(), out, x, to_squeeze);
+
+  return out;
+}
+
 TensorView* squeeze(TensorView* x, const std::vector<int64_t>& sizes) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   const auto ndims = static_cast<int>(x->domain()->noReductions().size());
 
   TORCH_INTERNAL_ASSERT(
@@ -149,20 +189,15 @@ TensorView* squeeze(TensorView* x, const std::vector<int64_t>& sizes) {
       ". Input tensor: ",
       x->toString());
 
-  std::vector<int> trivial_reduction_axes;
+  std::vector<bool> to_squeeze(ndims);
   for (const auto idx : c10::irange(sizes.size())) {
-    if (sizes[idx] == 1) {
-      trivial_reduction_axes.push_back(idx);
-    }
+    to_squeeze[idx] = (sizes[idx] == 1);
   }
-  return (trivial_reduction_axes.empty()) ? x
-                                          : sum(x,
-                                                trivial_reduction_axes,
-                                                false /* keep_dim */,
-                                                x->getDataType().value());
+  return squeeze(x, to_squeeze);
 }
 
 TensorView* squeeze(TensorView* x, const std::vector<int64_t>& sizes, int dim) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   const auto ndims = static_cast<int>(x->domain()->noReductions().size());
 
   TORCH_INTERNAL_ASSERT(
@@ -184,13 +219,16 @@ TensorView* squeeze(TensorView* x, const std::vector<int64_t>& sizes, int dim) {
       x->toString());
 
   if (sizes[dim] == 1) {
-    return sum(x, {dim}, false /* keep_dim */, x->getDataType().value());
+    std::vector<bool> to_squeeze(ndims, false);
+    to_squeeze[dim] = true;
+    return squeeze(x, to_squeeze);
   } else {
     return set(x);
   }
 }
 
 TensorView* unsqueeze(TensorView* x, int dim) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   const auto ndims = static_cast<int>(x->domain()->noReductions().size());
 
   if (dim < 0) {
@@ -210,29 +248,44 @@ TensorView* unsqueeze(TensorView* x, int dim) {
 }
 
 TensorView* permute(TensorView* x, const std::vector<int64_t>& new2old) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   if (new2old.size() == 0) {
     return set(x);
   }
   auto inp_domain = TensorDomain::noReductions(x->getMaybeRFactorDomain());
   std::vector<IterDomain*> out_domain(inp_domain.size());
 
+  TORCH_CHECK(
+      inp_domain.size() == new2old.size(),
+      "The number of dimensions in the tensor input does not match the length",
+      " of the desired ordering of dimensions i.e. input.dim() = ",
+      inp_domain.size(),
+      " is not equal to len(dims) = ",
+      new2old.size());
+
+  // Return scalar tensors immediately
+  if (inp_domain.size() == 0) {
+    return set(x);
+  }
+
   auto normalized_new2old =
       ir_utils::normalizeNew2Old(new2old, inp_domain.size());
 
   for (const auto i : c10::irange(out_domain.size())) {
-    auto in_id = inp_domain[new2old[i]];
+    auto in_id = inp_domain[normalized_new2old[i]];
     out_domain[i] = in_id->cloneWithoutRFactor();
   }
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       x->getDataType().value());
   IrBuilder::create<TransposeOp>(out_tensor, x, normalized_new2old);
   return out_tensor;
 }
 
 TensorView* transpose(TensorView* x, int64_t dim0, int64_t dim1) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   const auto ndims = static_cast<int>(x->domain()->noReductions().size());
 
   if (dim0 < 0) {
@@ -263,6 +316,7 @@ TensorView* transpose(TensorView* x, int64_t dim0, int64_t dim1) {
 }
 
 TensorView* transpose(TensorView* x) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   const auto ndims = static_cast<int>(x->domain()->noReductions().size());
 
   TORCH_CHECK(

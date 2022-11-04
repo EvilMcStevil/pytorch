@@ -127,16 +127,6 @@ void initNvFuserPythonBindings(PyObject* module) {
                 {self.recordingState(output())}));
           })
       .def(
-          "define_null_tensor",
-          [](nvfuser::FusionDefinition& self) -> nvfuser::Tensor {
-            FUSER_PERF_SCOPE("FusionDefinition.define_null_tensor");
-            nvfuser::Tensor out = self.defineTensor();
-            self.defineRecord(
-                new nvfuser::NullTensorRecord({self.recordingState(out())}));
-            return out;
-          },
-          py::return_value_policy::reference)
-      .def(
           "define_tensor",
           [](nvfuser::FusionDefinition& self,
              size_t ndims,
@@ -361,16 +351,21 @@ void initNvFuserPythonBindings(PyObject* module) {
 
   NVFUSER_PYTHON_BINDING_UNARY_OP("abs", abs)
   NVFUSER_PYTHON_BINDING_UNARY_OP("acos", acos)
+  NVFUSER_PYTHON_BINDING_UNARY_OP("acosh", acosh)
   NVFUSER_PYTHON_BINDING_UNARY_OP("asin", asin)
+  NVFUSER_PYTHON_BINDING_UNARY_OP("asinh", asinh)
   NVFUSER_PYTHON_BINDING_UNARY_OP("atan", atan)
   NVFUSER_PYTHON_BINDING_UNARY_OP("atanh", atanh)
   NVFUSER_PYTHON_BINDING_UNARY_OP("ceil", ceil)
   NVFUSER_PYTHON_BINDING_UNARY_OP("cos", cos)
   NVFUSER_PYTHON_BINDING_UNARY_OP("cosh", cosh)
   NVFUSER_PYTHON_BINDING_UNARY_OP("exp", exp)
+  NVFUSER_PYTHON_BINDING_UNARY_OP("exp2", exp2)
   NVFUSER_PYTHON_BINDING_UNARY_OP("expm1", expm1)
   NVFUSER_PYTHON_BINDING_UNARY_OP("erf", erf)
   NVFUSER_PYTHON_BINDING_UNARY_OP("erfc", erfc)
+  NVFUSER_PYTHON_BINDING_UNARY_OP("erfinv", erfinv)
+  NVFUSER_PYTHON_BINDING_UNARY_OP("erfcinv", erfcinv)
   NVFUSER_PYTHON_BINDING_UNARY_OP("floor", floor)
   NVFUSER_PYTHON_BINDING_UNARY_OP("frac", frac)
   NVFUSER_PYTHON_BINDING_UNARY_OP("lgamma", lgamma)
@@ -381,7 +376,7 @@ void initNvFuserPythonBindings(PyObject* module) {
   NVFUSER_PYTHON_BINDING_UNARY_OP("neg", neg)
   NVFUSER_PYTHON_BINDING_UNARY_OP("bitwise_not", bitwise_not)
   NVFUSER_PYTHON_BINDING_UNARY_OP("relu", relu)
-  NVFUSER_PYTHON_BINDING_UNARY_OP("rand_like", randlike)
+  NVFUSER_PYTHON_BINDING_UNARY_OP("rand_like", rand_like)
   NVFUSER_PYTHON_BINDING_UNARY_OP("reciprocal", reciprocal)
   NVFUSER_PYTHON_BINDING_UNARY_OP("round", round)
   NVFUSER_PYTHON_BINDING_UNARY_OP("rsqrt", rsqrt)
@@ -1268,48 +1263,6 @@ void initNvFuserPythonBindings(PyObject* module) {
       py::arg("axes"),
       py::arg("correction"),
       py::arg("keepdim") = false,
-      py::return_value_policy::reference);
-  nvf_ops.def(
-      "batch_norm",
-      [](nvfuser::FusionDefinition::Operators& self,
-         nvfuser::Tensor x,
-         nvfuser::Tensor weight,
-         nvfuser::Tensor bias,
-         nvfuser::Tensor running_mean,
-         nvfuser::Tensor running_var,
-         bool training,
-         nvfuser::Scalar momentum,
-         nvfuser::Scalar eps,
-         bool channels_last) -> decltype(auto) {
-        FUSER_PERF_SCOPE("Operators.batch_norm");
-        nvfuser::FusionDefinition* fd = self.fusion_definition;
-        nvfuser::Tensor output = fd->defineTensor();
-        nvfuser::Tensor mean = fd->defineTensor();
-        nvfuser::Tensor invstd = fd->defineTensor();
-        fd->defineRecord(new nvfuser::BatchNormOpRecord(
-            {fd->recordingState(x()),
-             fd->recordingState(weight()),
-             fd->recordingState(bias()),
-             fd->recordingState(running_mean()),
-             fd->recordingState(running_var()),
-             fd->recordingState(momentum()),
-             fd->recordingState(eps())},
-            {fd->recordingState(output()),
-             fd->recordingState(mean()),
-             fd->recordingState(invstd())},
-            training,
-            channels_last));
-        return std::make_tuple(output, mean, invstd);
-      },
-      py::arg("x"),
-      py::arg("weight").none(true),
-      py::arg("bias").none(true),
-      py::arg("running_mean").none(true),
-      py::arg("running_var").none(true),
-      py::arg("training"),
-      py::arg("momentum"),
-      py::arg("eps"),
-      py::arg("channels_last") = false,
       py::return_value_policy::reference);
   nvf_ops.def(
       "broadcast_in_dim",

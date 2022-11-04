@@ -1,9 +1,8 @@
 #include <torch/csrc/jit/codegen/cuda/codegen.h>
-#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir_dispatch.h>
+#include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/mma_utils.h>
 #include <torch/csrc/jit/codegen/cuda/type.h>
 #include <torch/csrc/jit/codegen/cuda/utils.h>
@@ -264,9 +263,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       indent()
           << "  static_cast<uint64_t>(*(philox_args.offset_.ptr) + philox_args.offset_intragraph_) :\n";
       indent() << "  philox_args.offset_.val;\n";
-      indent() << "auto seed = philox_args.captured_ ?\n";
-      indent()
-          << "  static_cast<uint64_t>(*(philox_args.seed_.ptr)) : philox_args.seed_.val;\n";
       indent() << "uint4 rng_result;\n";
       indent() << "nvfuser_index_t rng_subseq = -1;\n";
       indent() << "nvfuser_index_t rng_offset = -1;\n";
@@ -374,8 +370,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     std::stringstream name;
     if (val->isA<TensorView>()) {
       name << "T";
-    } else if (val->isA<kir::IntPair>()) {
-      name << "ip";
     } else {
       name << typePrefix(val->dtype());
     }
@@ -503,7 +497,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
 
   void handle(const kir::TensorIndex* ti) final {
     bool is_volatile = ti->view()->getMemoryType() == MemoryType::Global &&
-        kernel_->summary().sync_map.needsRawSync(ti->view()).hasBID();
+        kernel_->summary().sync_map->needsRawSync(ti->view()).hasBID();
     if (is_volatile) {
       code_ << "*(volatile " << ti->getDataType().value() << "*)&";
     }
@@ -546,9 +540,18 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   void genCpAsync(const LoadStoreOp* ldst, int vec_size) {
     auto dtype = ldst->in()->getDataType().value();
 
-    indent() << "Ampere::cpAsync("
-             << genVectorPointer(ldst->out(), dtype, vec_size) << ","
-             << genVectorPointer(ldst->in(), dtype, vec_size) << ");\n";
+    if (ldst->predicate() == nullptr) {
+      // Out of line predicate variant
+      indent() << "Ampere::cpAsync("
+               << genVectorPointer(ldst->out(), dtype, vec_size) << ","
+               << genVectorPointer(ldst->in(), dtype, vec_size) << ");\n";
+    } else {
+      // Inline predicate variant
+      indent() << "Ampere::cpAsync("
+               << genVectorPointer(ldst->out(), dtype, vec_size) << ","
+               << genVectorPointer(ldst->in(), dtype, vec_size) << ","
+               << genInline(ldst->predicate()) << ");\n";
+    }
   }
 
   void genLdMatrix(const LoadStoreOp* ldst, int vector_word_size) {
@@ -563,12 +566,24 @@ class CudaKernelGenerator : private OptOutConstDispatch {
           << "&" << gen(ldst->in()) << ");\n";
   }
 
+  void handle(const FullOp* fop) final {
+    indent() << gen(fop->output(0)) << " = (" << fop->dtype() << ")"
+             << gen(fop->getFillValue()) << ";\n";
+  }
+
   void handle(const ARangeOp* aop) final {
-    auto index = genTensorIndex(aop->getLinearIndex()->as<kir::TensorIndex>());
-    indent() << gen(aop->output(0)) << " = arange<" << aop->output(0)->dtype()
-             << ">";
+    auto index =
+        genTensorIndex(aop->getLinearLogicalIndex()->as<kir::TensorIndex>());
+    indent() << gen(aop->output(0)) << " = arange<" << aop->dtype() << ">";
     code_ << "(" << index << ", " << gen(aop->start()) << ", "
           << gen(aop->step()) << ");\n";
+  }
+
+  void handle(const EyeOp* aop) final {
+    auto index1 = gen(aop->getIndex1());
+    auto index2 = gen(aop->getIndex2());
+    indent() << gen(aop->output(0)) << " = (" << aop->dtype() << ")";
+    code_ << "(" << index1 << " == " << index2 << ");\n";
   }
 
   void handle(const UnaryOp* uop) final {
@@ -601,14 +616,11 @@ class CudaKernelGenerator : private OptOutConstDispatch {
           continue;
         }
 
-        ExpressionEvaluator expr_eval(id->fusion());
-        auto vector_size_optional = expr_eval.evaluate(id->extent());
-
         TORCH_INTERNAL_ASSERT(
-            vector_size_optional.has_value(),
+            id->extent()->isConstInt(),
             "Could not evaluate constant value bound to vectorized dim.");
 
-        vector_word_size = vector_size_optional->as<int64_t>();
+        vector_word_size = id->extent()->evaluateInt();
 
         vectorize_op = id->getParallelType() == ParallelType::Vectorize;
         misaligned_op =
@@ -670,11 +682,11 @@ class CudaKernelGenerator : private OptOutConstDispatch {
               in_tv->getMemoryType() == MemoryType::Global;
 
           bool is_volatile_to = out_tv->getMemoryType() == MemoryType::Global &&
-              kernel_->summary().sync_map.needsRawSync(out_tv).hasBID();
+              kernel_->summary().sync_map->needsRawSync(out_tv).hasBID();
 
           bool is_volatile_from =
               in_tv->getMemoryType() == MemoryType::Global &&
-              kernel_->summary().sync_map.needsRawSync(in_tv).hasBID();
+              kernel_->summary().sync_map->needsRawSync(in_tv).hasBID();
 
           if (localToGlobal) {
             indent() << "loadLocalToGlobal<" << uop->out()->dtype() << ", "
@@ -762,9 +774,8 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   void handle(const RNGOp* rop) final {
     // TODO: TORCH_INTERNAL_ASSERT that the scheduler correctly creates an
     // innermost ID of size 4 (float) or size 2 (double)?
-    auto out_tv = rop->output(0)->as<kir::TensorIndex>()->view();
     auto index = genTensorIndex(rop->getPhiloxIndex()->as<kir::TensorIndex>());
-    int multiple = out_tv->getDataType() == DataType::Double ? 2 : 4;
+    int multiple = rop->dtype() == DataType::Double ? 2 : 4;
     indent() << "nvfuser_index_t linear_index" << rop->name() << " = " << index
              << ";\n";
     indent() << "nvfuser_index_t rng_subseq" << rop->name() << " = linear_index"
@@ -775,6 +786,9 @@ class CudaKernelGenerator : private OptOutConstDispatch {
              << rop->getRNGOffset() << ";\n";
     indent() << "if (rng_subseq != rng_subseq" << rop->name()
              << " || rng_offset != rng_offset" << rop->name() << ") {\n";
+    indent() << "  auto seed = philox_args.captured_ ?\n"
+             << "      static_cast<uint64_t>(*(philox_args.seed_.ptr)) : \n"
+             << "      philox_args.seed_.val;\n";
     indent() << "  rng_result = philox(seed, rng_subseq" << rop->name()
              << ", philox_offset / 4 + rng_offset" << rop->name() << ");\n";
     indent() << "  rng_subseq = rng_subseq" << rop->name() << ";\n";
@@ -782,11 +796,20 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     indent() << "}\n";
     auto op_type = rop->getRNGOpType();
     indent() << gen(rop->output(0)) << " = " << op_type;
-    if (needFloatSuffix(op_type) &&
-        rop->output(0)->dtype() == DataType::Float) {
+    if (needFloatSuffix(op_type) && rop->dtype() == DataType::Float) {
       code_ << "f";
     }
-    code_ << "(rng_result, rng_component" << rop->name() << ");\n";
+    code_ << "(rng_result, rng_component" << rop->name();
+    switch (op_type) {
+      case RNGOpType::UniformRange: {
+        auto parameters = rop->getParameters();
+        TORCH_INTERNAL_ASSERT(parameters.size() == 2);
+        code_ << ", " << gen(parameters[0]) << ", " << gen(parameters[1]);
+        break;
+      }
+      default:;
+    }
+    code_ << ");\n";
   }
 
   std::string genBinaryOp(
@@ -1267,17 +1290,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
         continue;
       }
 
-      ExpressionEvaluator expr_eval(id->fusion());
-      auto vector_size_optional = expr_eval.evaluate(id->extent());
-
       TORCH_INTERNAL_ASSERT(
-          vector_size_optional.has_value(),
+          id->extent()->isConstInt(),
           "Could not evaluate constant value bound to vectorized dim.");
 
       TORCH_INTERNAL_ASSERT(
           id->getParallelType() != ParallelType::MisalignedVectorize,
           "LoadStoreOp: no support yet for mis-aligned vectorization");
-      vector_word_size = vector_size_optional->as<int64_t>();
+      vector_word_size = id->extent()->evaluateInt();
       vectorize_op = true;
       break;
     }
@@ -2598,50 +2618,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
 
   void handle(const kir::UpdateMagicZero*) final {
     indent() << "NVFUSER_UPDATE_MAGIC_ZERO\n";
-  }
-
-  void handle(const kir::Swizzle2DInt* swizzle_2d) {
-    TORCH_INTERNAL_ASSERT(print_inline_);
-    TORCH_INTERNAL_ASSERT(
-        swizzle_2d->swizzleType() != Swizzle2DType::NoSwizzle,
-        "Swizzle type undefined.");
-    if (print_inline_) {
-      code_ << swizzle_2d->swizzleType() << "({" << gen(swizzle_2d->inX())
-            << "," << gen(swizzle_2d->inY()) << "} , "
-            << "{" << gen(swizzle_2d->extentX()) << ","
-            << gen(swizzle_2d->extentY()) << "})";
-    }
-  }
-
-  void handle(const kir::IntPair* int_pair) {
-    const auto def = int_pair->definition();
-    TORCH_INTERNAL_ASSERT(
-        def != nullptr, "no support for un-inlined int pair yet.");
-    code_ << gen(def);
-  }
-
-  void handle(const kir::PairSelect* pair_select) {
-    if (print_inline_) {
-      code_ << gen(pair_select->in());
-    } else {
-      indent() << gen(pair_select->out()) << " = " << gen(pair_select->in());
-    }
-
-    switch (pair_select->selection()) {
-      case kir::PairSelect::Selection::X:
-        code_ << ".x";
-        break;
-      case kir::PairSelect::Selection::Y:
-        code_ << ".y";
-        break;
-      default:
-        TORCH_INTERNAL_ASSERT(false, "unknown select")
-        break;
-    }
-
-    if (!print_inline_) {
-      code_ << ";\n";
-    }
   }
 
  private:

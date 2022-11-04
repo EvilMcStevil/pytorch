@@ -83,9 +83,6 @@ void Val::dispatch(T handler, Val* val) {
     case ValType::TensorIndex:
       ptr(handler)->handle(val->as<kir::TensorIndex>());
       return;
-    case ValType::IntPair:
-      ptr(handler)->handle(val->as<kir::IntPair>());
-      return;
     default:
       break;
   }
@@ -95,8 +92,14 @@ void Val::dispatch(T handler, Val* val) {
 template <typename T>
 void Expr::dispatch(T handler, Expr* expr) {
   switch (*(expr->getExprType())) {
+    case ExprType::FullOp:
+      ptr(handler)->handle(expr->as<FullOp>());
+      return;
     case ExprType::ARangeOp:
       ptr(handler)->handle(expr->as<ARangeOp>());
+      return;
+    case ExprType::EyeOp:
+      ptr(handler)->handle(expr->as<EyeOp>());
       return;
     case ExprType::UnaryOp:
       ptr(handler)->handle(expr->as<UnaryOp>());
@@ -130,6 +133,9 @@ void Expr::dispatch(T handler, Expr* expr) {
       return;
     case ExprType::BroadcastOp:
       ptr(handler)->handle(expr->as<BroadcastOp>());
+      return;
+    case ExprType::SqueezeOp:
+      ptr(handler)->handle(expr->as<SqueezeOp>());
       return;
 
     case ExprType::Split:
@@ -204,12 +210,6 @@ void Expr::dispatch(T handler, Expr* expr) {
       return;
     case ExprType::AllocateFusedReduction:
       ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
-      return;
-    case ExprType::Swizzle2DInt:
-      ptr(handler)->handle(expr->as<kir::Swizzle2DInt>());
-      return;
-    case ExprType::PairSelect:
-      ptr(handler)->handle(expr->as<kir::PairSelect>());
       return;
     default:
       TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
@@ -269,9 +269,6 @@ void Val::constDispatch(T handler, const Val* val) {
     case ValType::TensorIndex:
       ptr(handler)->handle(val->as<kir::TensorIndex>());
       return;
-    case ValType::IntPair:
-      ptr(handler)->handle(val->as<kir::IntPair>());
-      return;
     default:
       break;
   }
@@ -281,8 +278,14 @@ void Val::constDispatch(T handler, const Val* val) {
 template <typename T>
 void Expr::constDispatch(T handler, const Expr* expr) {
   switch (*(expr->getExprType())) {
+    case ExprType::FullOp:
+      ptr(handler)->handle(expr->as<FullOp>());
+      return;
     case ExprType::ARangeOp:
       ptr(handler)->handle(expr->as<ARangeOp>());
+      return;
+    case ExprType::EyeOp:
+      ptr(handler)->handle(expr->as<EyeOp>());
       return;
     case ExprType::UnaryOp:
       ptr(handler)->handle(expr->as<UnaryOp>());
@@ -316,6 +319,9 @@ void Expr::constDispatch(T handler, const Expr* expr) {
       return;
     case ExprType::BroadcastOp:
       ptr(handler)->handle(expr->as<BroadcastOp>());
+      return;
+    case ExprType::SqueezeOp:
+      ptr(handler)->handle(expr->as<SqueezeOp>());
       return;
 
     case ExprType::Split:
@@ -390,12 +396,6 @@ void Expr::constDispatch(T handler, const Expr* expr) {
       return;
     case ExprType::AllocateFusedReduction:
       ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
-      return;
-    case ExprType::Swizzle2DInt:
-      ptr(handler)->handle(expr->as<kir::Swizzle2DInt>());
-      return;
-    case ExprType::PairSelect:
-      ptr(handler)->handle(expr->as<kir::PairSelect>());
       return;
     default:
       TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
@@ -463,9 +463,6 @@ void Val::mutatorDispatch(T mutator, Val* val) {
     case ValType::TensorIndex:
       ptr(mutator)->mutate(val->as<kir::TensorIndex>());
       return;
-    case ValType::IntPair:
-      ptr(mutator)->mutate(val->as<kir::IntPair>());
-      return;
     default:
       break;
   }
@@ -475,8 +472,14 @@ void Val::mutatorDispatch(T mutator, Val* val) {
 template <typename T>
 void Expr::mutatorDispatch(T mutator, Expr* expr) {
   switch (*(expr->getExprType())) {
+    case ExprType::FullOp:
+      ptr(mutator)->mutate(expr->as<FullOp>());
+      return;
     case ExprType::ARangeOp:
       ptr(mutator)->mutate(expr->as<ARangeOp>());
+      return;
+    case ExprType::EyeOp:
+      ptr(mutator)->mutate(expr->as<EyeOp>());
       return;
     case ExprType::UnaryOp:
       ptr(mutator)->mutate(expr->as<UnaryOp>());
@@ -510,6 +513,9 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
       return;
     case ExprType::BroadcastOp:
       ptr(mutator)->mutate(expr->as<BroadcastOp>());
+      return;
+    case ExprType::SqueezeOp:
+      ptr(mutator)->mutate(expr->as<SqueezeOp>());
       return;
 
     case ExprType::Split:
@@ -584,12 +590,6 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
       return;
     case ExprType::AllocateFusedReduction:
       ptr(mutator)->mutate(expr->as<kir::AllocateFusedReduction>());
-      return;
-    case ExprType::Swizzle2DInt:
-      ptr(mutator)->mutate(expr->as<kir::Swizzle2DInt>());
-      return;
-    case ExprType::PairSelect:
-      ptr(mutator)->mutate(expr->as<kir::PairSelect>());
       return;
     default:
       TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
@@ -729,12 +729,15 @@ void OptOutConstDispatch::handle(const kir::Predicate* stmt) {
 void OptOutConstDispatch::handle(const kir::TensorIndex* stmt) {
   unhandled(stmt);
 }
-void OptOutConstDispatch::handle(const kir::IntPair* stmt) {
-  unhandled(stmt);
-}
 
 // Exprs
+void OptOutConstDispatch::handle(const FullOp* stmt) {
+  unhandled(stmt);
+}
 void OptOutConstDispatch::handle(const ARangeOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const EyeOp* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const UnaryOp* stmt) {
@@ -768,6 +771,9 @@ void OptOutConstDispatch::handle(const MmaOp* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const BroadcastOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const SqueezeOp* stmt) {
   unhandled(stmt);
 }
 
@@ -844,12 +850,6 @@ void OptOutConstDispatch::handle(const kir::GroupedGridWelford* stmt) {
 void OptOutConstDispatch::handle(const kir::AllocateFusedReduction* stmt) {
   unhandled(stmt);
 }
-void OptOutConstDispatch::handle(const kir::Swizzle2DInt* stmt) {
-  unhandled(stmt);
-}
-void OptOutConstDispatch::handle(const kir::PairSelect* stmt) {
-  unhandled(stmt);
-}
 
 void OptOutDispatch::unhandled(Statement*) {}
 
@@ -885,12 +885,15 @@ void OptOutDispatch::handle(kir::Predicate* stmt) {
 void OptOutDispatch::handle(kir::TensorIndex* stmt) {
   unhandled(stmt);
 }
-void OptOutDispatch::handle(kir::IntPair* stmt) {
-  unhandled(stmt);
-}
 
 // Exprs
+void OptOutDispatch::handle(FullOp* stmt) {
+  unhandled(stmt);
+}
 void OptOutDispatch::handle(ARangeOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(EyeOp* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(UnaryOp* stmt) {
@@ -924,6 +927,9 @@ void OptOutDispatch::handle(MmaOp* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(BroadcastOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(SqueezeOp* stmt) {
   unhandled(stmt);
 }
 
@@ -998,12 +1004,6 @@ void OptOutDispatch::handle(kir::GroupedGridWelford* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::AllocateFusedReduction* stmt) {
-  unhandled(stmt);
-}
-void OptOutDispatch::handle(kir::Swizzle2DInt* stmt) {
-  unhandled(stmt);
-}
-void OptOutDispatch::handle(kir::PairSelect* stmt) {
   unhandled(stmt);
 }
 

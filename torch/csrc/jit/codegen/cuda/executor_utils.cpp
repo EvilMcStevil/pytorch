@@ -32,7 +32,6 @@
 #include <nvfuser_resources/index_utils.h>
 #include <nvfuser_resources/memory.h>
 #include <nvfuser_resources/random_numbers.h>
-#include <nvfuser_resources/swizzle.h>
 #include <nvfuser_resources/tensor.h>
 #include <nvfuser_resources/tensorcore.h>
 #include <nvfuser_resources/tuple.h>
@@ -127,7 +126,6 @@ std::string kernelPreamble() {
   ss << nvfuser_resources::fused_welford_helper_cu;
   ss << nvfuser_resources::fused_reduction_cu;
   ss << nvfuser_resources::fused_welford_impl_cu;
-  ss << nvfuser_resources::swizzle_cu;
 
   // Random utilities
   ss << nvfuser_resources::PhiloxCudaStateRaw_cu;
@@ -428,9 +426,9 @@ std::vector<std::pair<bool, int>> getVectorizedFusionInputOutput(
   std::vector<std::pair<bool, int>> vectorized_input_output;
 
   // When the producer is a fusion input, validate only the producer
-  // and assume the consumer is contiguous. Similarly, when the
+  // and assume the consumer to be vectorizable. Similarly, when the
   // consumer is a fusion output, validate the consumer and assume the
-  // producer is contiguous.
+  // producer is vectorizable.
 
   if (producer_tv->isFusionInput()) {
     auto producer_it = std::find(
@@ -443,16 +441,6 @@ std::vector<std::pair<bool, int>> getVectorizedFusionInputOutput(
     auto pos = std::distance(fusion->inputs().begin(), producer_it);
     vectorized_input_output.push_back(
         std::make_pair<bool, int>(true, static_cast<int>(pos)));
-  } else {
-    // If not fusion input, assume it's fully contiguous, so nothing
-    // to check with respect to strides.
-    TORCH_INTERNAL_ASSERT(
-        std::all_of(
-            producer_tv->domain()->contiguity().begin(),
-            producer_tv->domain()->contiguity().end(),
-            [](bool contig) { return contig; }),
-        "Unsupported pattern of vectorization: ",
-        consumer_tv->definition()->toString());
   }
 
   if (consumer_tv->isFusionOutput()) {
@@ -466,16 +454,6 @@ std::vector<std::pair<bool, int>> getVectorizedFusionInputOutput(
     auto pos = std::distance(fusion->outputs().begin(), consumer_it);
     vectorized_input_output.push_back(
         std::make_pair<bool, int>(false, static_cast<int>(pos)));
-  } else {
-    // If not fusion input, assume it's fully contiguous, so nothing
-    // to check with respect to strides.
-    TORCH_INTERNAL_ASSERT(
-        std::all_of(
-            consumer_tv->domain()->contiguity().begin(),
-            consumer_tv->domain()->contiguity().end(),
-            [](bool contig) { return contig; }),
-        "Unsupported pattern of vectorization: ",
-        consumer_tv->definition()->toString());
   }
 
   return vectorized_input_output;
@@ -561,7 +539,7 @@ std::unique_ptr<caching::VectorizedTensorInfo> getVectorizedTensorValidationInfo
 // word size.
 void validateAlignedVectorizeExtents(
     const VectorizedSetInfo& info,
-    kir::ExpressionEvaluator& expr_eval) {
+    ExpressionEvaluator& expr_eval) {
   TORCH_INTERNAL_ASSERT(
       !info.contig_root_ids.empty(),
       "No root ID found for vectorization with ",
@@ -617,11 +595,23 @@ void validateAlignedVectorizedFusionInputOutput(
   for (auto i = aten_tensor.ndimension() - 1; i >= 0; --i) {
     const auto stride = aten_tensor.strides().at(i);
     const auto size = aten_tensor.sizes().at(i);
+    auto root_id = tv->getMaybeRFactorDomain()[i];
+    const auto is_expanded_broadcasting =
+        root_id->isBroadcast() && root_id->hasExpandedExtent();
+
+    if (is_expanded_broadcasting) {
+      TORCH_INTERNAL_ASSERT(
+          stride == 0,
+          "Dimension ",
+          i,
+          " should be an expanded broadcasting, but it does not have stride zero.");
+    }
+
     // If this domain is contiguous or size == 1, then not necessary to check
     // the stride. Otherwise, stride must be 1 if it's rightmost or
     // divisible by word_size
     TORCH_INTERNAL_ASSERT(
-        stride == cur_contig_stride || size == 1 ||
+        stride == cur_contig_stride || size == 1 || is_expanded_broadcasting ||
             (still_rightmost && stride == 1) ||
             (!still_rightmost && stride % word_size == 0),
         "Vectorization of ",
@@ -635,7 +625,8 @@ void validateAlignedVectorizedFusionInputOutput(
         stride)
     // If the domain is size-1, the next domain is still considered
     // rightmost.
-    still_rightmost = still_rightmost && size == 1;
+    still_rightmost =
+        still_rightmost && (size == 1 || is_expanded_broadcasting);
     // We do not update cur_contig_stride for size==1 dimensions,
     // since we have specialized vectorization stride check for them
     if (size != 1) {
@@ -649,7 +640,7 @@ void validateAlignedVectorizedTensors(
     const KernelArgumentHolder& args,
     const std::vector<at::Tensor>& outputs,
     caching::ExecutorCompileTimeInfoCache* data_cache,
-    kir::ExpressionEvaluator& expr_eval) {
+    ExpressionEvaluator& expr_eval) {
   auto tensor_vectorization_validation_entry =
       executor_utils::caching::ExecutorCompileTimeEntry<
           executor_utils::caching::VectorizedTensorValidation>(
@@ -695,7 +686,7 @@ void validateMisalignedVectorizedTensors(
     const KernelArgumentHolder& args,
     const std::vector<at::Tensor>& outputs,
     caching::ExecutorCompileTimeInfoCache* data_cache,
-    kir::ExpressionEvaluator& expr_eval) {
+    ExpressionEvaluator& expr_eval) {
   auto tensor_vectorization_validation_entry =
       executor_utils::caching::ExecutorCompileTimeEntry<
           executor_utils::caching::VectorizedTensorValidation>(
@@ -745,7 +736,7 @@ void validateMisalignedVectorizedTensors(
 // found, Vectorize is illegal.
 void validateVectorizedSplits(
     kir::Kernel* kernel,
-    kir::ExpressionEvaluator& expr_eval) {
+    ExpressionEvaluator& expr_eval) {
   for (const auto& extent_factor : kernel->summary().splits_to_validate) {
     auto input_extent = expr_eval.evaluate(extent_factor.first);
     auto split_factor = expr_eval.evaluate(extent_factor.second);
@@ -776,7 +767,7 @@ void validateVectorizedTensors(
     const KernelArgumentHolder& args,
     const std::vector<at::Tensor>& outputs,
     caching::ExecutorCompileTimeInfoCache* data_cache,
-    kir::ExpressionEvaluator& expr_eval) {
+    ExpressionEvaluator& expr_eval) {
   FUSER_PERF_SCOPE("FusionExecutor::validateVectorizedTensors");
 
   validateAlignedVectorizedTensors(
@@ -839,18 +830,15 @@ void bindInputForExprEvaluation(
                 *maybe_expanded_size == tensor_arg_size,
                 "Expecting expanded extent of ",
                 *maybe_expanded_size,
-                " but recieved value of ",
+                " but received value of ",
                 tensor_arg_size);
+          } else {
+            expr_eval.bind(root_domain[dim]->expandedExtent(), tensor_arg_size);
           }
         }
 
         const auto value =
             root_domain[dim]->hasExpandedExtent() ? 1 : tensor_arg_size;
-        if (value == 0 && cg_tensor->uses().empty()) {
-          // If there's no uses, ignore there's a size-0 dimension.
-          continue;
-        }
-        TORCH_INTERNAL_ASSERT(value != 0, "Cannot handle size-0 dimensions");
         bool should_bind = true;
         if (check_consistency) {
           const auto prev_value = expr_eval.evaluate(extent);
@@ -890,7 +878,7 @@ void bindInputForExprEvaluation(
 
 } // namespace
 
-kir::ExpressionEvaluator bindKernelInputs(
+ExpressionEvaluator bindKernelInputs(
     const KernelArgumentHolder& args,
     kir::Kernel* kernel,
     bool check_consistency) {
@@ -900,7 +888,7 @@ kir::ExpressionEvaluator bindKernelInputs(
       kernel->inputs().size() == args.size(),
       "Something went wrong configuring launch. Inputs no longer match.");
 
-  kir::ExpressionEvaluator expr_eval;
+  ExpressionEvaluator expr_eval;
   const auto& inputs = kernel->inputs();
 
   for (const auto i : c10::irange(inputs.size())) {
@@ -924,7 +912,7 @@ ExpressionEvaluator bindFusionInputs(
       " args size: ",
       args.size());
 
-  ExpressionEvaluator expr_eval(fusion);
+  ExpressionEvaluator expr_eval;
 
   // This should probably move to EvaluationContext as we may want to bind
   // input values frequently. Bind fusion input values to runtime values.
@@ -1024,6 +1012,12 @@ std::pair<NvrtcFunction, std::string> nvrtcCompile(
   // compile to sass is not allowed prior to CUDA 11.1
   compile_to_sass = false;
 #endif
+
+  if (isOptionDisabled(DisableOption::CompileToSass)) {
+    // Allows manually disabling compilation to sass
+    //  so the intermediate ptx could be checked.
+    compile_to_sass = false;
+  }
   // CUDA 11.1 allows going directly to SASS (sm_) instead of PTX (compute_)
   // which gives better backwards compatibility to work on older driver,
   // (since older driver doesn't necessrily recognize PTX emitted by new

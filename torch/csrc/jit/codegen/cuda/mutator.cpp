@@ -125,7 +125,18 @@ void OptOutMutator::mutate(kir::TensorIndex*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 
-// MUTATE FUNCTIONS FOR EXPRESSIONS.
+void OptOutMutator::mutate(FullOp* fop) {
+  Val* out = maybeMutated(fop->output(0));
+  Val* fill_value = maybeMutated(fop->getFillValue());
+
+  if (out->sameAs(fop->output(0))) {
+    return;
+  }
+  auto container = fop->container();
+  container->removeExpr(fop);
+  IrBuilder::create<FullOp>(container, out, fill_value, fop->dtype());
+}
+
 void OptOutMutator::mutate(ARangeOp* aop) {
   Val* out = maybeMutated(aop->output(0));
 
@@ -140,7 +151,20 @@ void OptOutMutator::mutate(ARangeOp* aop) {
       aop->start(),
       aop->end(),
       aop->step(),
-      aop->getLinearIndex());
+      aop->dtype(),
+      aop->getLinearLogicalIndex());
+}
+
+void OptOutMutator::mutate(EyeOp* eop) {
+  Val* out = maybeMutated(eop->output(0));
+
+  if (out->sameAs(eop->output(0))) {
+    return;
+  }
+  auto container = eop->container();
+  container->removeExpr(eop);
+  IrBuilder::create<EyeOp>(
+      container, out, eop->dtype(), eop->getIndex1(), eop->getIndex2());
 }
 
 void OptOutMutator::mutate(UnaryOp* uop) {
@@ -190,8 +214,13 @@ void OptOutMutator::mutate(TernaryOp* top) {
 
 void OptOutMutator::mutate(RNGOp* rop) {
   Val* out = maybeMutated(rop->output(0));
+  auto& parameters = rop->getParameters();
+  std::vector<Val*> mutated_parameters;
+  for (auto v : parameters) {
+    mutated_parameters.emplace_back(maybeMutated(v));
+  }
 
-  if (out == rop->output(0)) {
+  if (out == rop->output(0) && mutated_parameters == parameters) {
     return;
   }
 
@@ -199,7 +228,13 @@ void OptOutMutator::mutate(RNGOp* rop) {
   auto rop_type = rop->getRNGOpType();
   container->removeExpr(rop);
   IrBuilder::create<RNGOp>(
-      container, rop_type, out, rop->getRNGOffset(), rop->getPhiloxIndex());
+      container,
+      rop_type,
+      out,
+      rop->dtype(),
+      mutated_parameters,
+      rop->getRNGOffset(),
+      rop->getPhiloxIndex());
 }
 
 void OptOutMutator::mutate(ReductionOp* rop) {
@@ -384,6 +419,20 @@ void OptOutMutator::mutate(BroadcastOp* bop) {
   auto flags = bop->getBroadcastDimFlags();
   container->removeExpr(bop);
   IrBuilder::create<BroadcastOp>(container, out, in, flags);
+}
+
+void OptOutMutator::mutate(SqueezeOp* sop) {
+  Val* out = maybeMutated(sop->out());
+  Val* in = maybeMutated(sop->in());
+
+  if (out->sameAs(sop->out()) && in->sameAs(sop->in())) {
+    return;
+  }
+
+  auto container = sop->container();
+  auto flags = sop->getSqueezeDimFlags();
+  container->removeExpr(sop);
+  IrBuilder::create<SqueezeOp>(container, out, in, flags);
 }
 
 void OptOutMutator::mutate(TransposeOp* top) {
@@ -583,15 +632,6 @@ void OptOutMutator::mutate(kir::GroupedGridWelford*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 void OptOutMutator::mutate(kir::AllocateFusedReduction*) {
-  TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
-}
-void OptOutMutator::mutate(kir::Swizzle2DInt*) {
-  TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
-}
-void OptOutMutator::mutate(kir::PairSelect*) {
-  TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
-}
-void OptOutMutator::mutate(kir::IntPair*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 

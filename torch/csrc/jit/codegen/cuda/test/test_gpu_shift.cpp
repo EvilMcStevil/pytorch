@@ -17,7 +17,6 @@
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_cache.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/mutator.h>
@@ -984,6 +983,9 @@ TEST_F(NVFuserTest, FusionShiftMerge1_CUDA) {
   tv2->reorder({{1, 2}, {2, 1}});
   tv2->merge(2, 3);
 
+  TransformPropagatorWithCheck propagator(tv2);
+  MaxRootDomainInfoSpanningTree(tv2).traverse(&propagator);
+
   tv0->computeAt(tv2, 2);
 
   // t1 allocation: (split_factor + 1) * (split_factor + 1)
@@ -1039,6 +1041,9 @@ TEST_F(NVFuserTest, FusionShiftMerge2_CUDA) {
   tv4->split(0, split_factor);
   tv4->reorder({{1, 2}, {2, 1}});
   tv4->merge(2, 3);
+
+  TransformPropagatorWithCheck propagator(tv4);
+  MaxRootDomainInfoSpanningTree(tv4).traverse(&propagator);
 
   tv0->computeAt(tv4, -2);
 
@@ -2976,6 +2981,7 @@ TEST_F(NVFuserTest, FusionConv2D_CUDA) {
 TEST_F(NVFuserTest, FusionConv2DNoPadding_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
+  ContextCudnnTF32Disabled disabling_tf32_cudnn;
 
   // Input: [C, H, W]
   auto inp = makeSymbolicTensor(3);
@@ -4149,7 +4155,7 @@ TEST_F(NVFuserTest, FusionPartialSplit1_CUDA) {
   // so it's going to be just 2 rather than 3.
   const int numel_x = 18;
 
-  ExpressionEvaluator evaluator(&fusion);
+  ExpressionEvaluator evaluator;
   auto root_extent = tv4->getRootDomain()[0]->extent();
   evaluator.bind(root_extent, numel_x);
   auto extent_eval = evaluator.evaluate(tv4->axis(0)->extent());
@@ -5392,6 +5398,72 @@ TEST_F(NVFuserTest, FusionGatherIterTypePromotion_CUDA) {
   auto outputs = fe.runFusion(inputs);
 
   testValidate(&fusion, outputs, inputs, {ref}, __LINE__, __FILE__);
+}
+
+TEST_F(NVFuserTest, FusionContigPredicateShift_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  std::vector<int64_t> shape({2, 2});
+
+  auto tv0 = makeConcreteTensor(shape);
+  // [0:I]
+  fusion.addInput(tv0);
+
+  // Below, tv2 and tv3 are mostly the same, except for tv2 is padded
+  // with 0, whereas tv3 is not, so the valid range of tv3 is [0:I-1]
+
+  // [0:I]
+  auto tv1 = shift(tv0, {-1, 0});
+
+  // [0:I-1]
+  auto tv2 = shift(tv0, {-1, 0}, false);
+
+  // tv3 is not an output of shift, but it gets a partial root
+  // domain from tv2, so it must be predicated at the root domain
+  auto tv3 = add(tv2, IrBuilder::create<Double>(1));
+
+  fusion.addOutput(tv1);
+  fusion.addOutput(tv3);
+
+  // contig merge
+  tv1->merge(0);
+  tv1->split(0, 4);
+  TransformPropagator propagator(tv1);
+  MaxRootDomainInfoSpanningTree(tv1).traverse(&propagator);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  // Create 3x2 and trim to 2x2. This would cause the output tensor
+  // non-zero values if not properly predicated.
+  at::Tensor t0 = at::randn({3, 2}, options);
+  t0 = t0.index(
+      {at::indexing::Slice(0, 2), at::indexing::Slice(0, at::indexing::None)});
+
+  // Use random output to detect invalid writes
+  at::Tensor t1 = at::rand_like(t0, options);
+  // Use zero-cleared output to detect invalid writes
+  at::Tensor t3 = at::zeros_like(t0, options);
+
+  std::vector<IValue> inputs = {t0};
+  std::vector<at::Tensor> outputs = {t1, t3};
+
+  std::vector<at::indexing::TensorIndex> indices{
+      at::indexing::Slice(0, -1), at::indexing::Slice(0, at::indexing::None)};
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, inputs);
+  fe.runFusion(inputs, outputs);
+
+  // Make sure the padded region is zero filled
+  TORCH_CHECK(t1[1].equal(at::zeros(2, options)));
+  // Make sure not touched as the shift is not padded
+  TORCH_CHECK(t3[1].equal(at::zeros(2, options)));
+
+  auto ref = shift(t0, {-1, 0});
+
+  TORCH_CHECK(t1.equal(ref));
+  TORCH_CHECK(t3.index(indices).equal((ref + 1).index(indices)));
 }
 
 } // namespace jit

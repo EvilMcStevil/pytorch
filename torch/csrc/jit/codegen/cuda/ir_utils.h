@@ -304,9 +304,7 @@ TORCH_CUDA_CU_API std::vector<TensorView*> allTvsExcept(
     Fusion* fusion,
     const std::unordered_set<TensorView*>& except);
 
-TORCH_CUDA_CU_API std::vector<Expr*> getReductionOps(
-    Fusion* fusion,
-    bool ignore_trivial = true);
+TORCH_CUDA_CU_API std::vector<Expr*> getReductionOps(Fusion* fusion);
 
 // Returns the initialization value of tv or nullptr if not initialized.
 TORCH_CUDA_CU_API Val* getReductionInitValOf(TensorView* tv);
@@ -317,10 +315,15 @@ TORCH_CUDA_CU_API bool isReductionOp(const Expr*);
 // Returns if Expr is a reduction op with TensorView or TensorIndex
 TORCH_CUDA_CU_API bool isReductionTvOp(const Expr*);
 
+// Returns all non-trivial view operations. We shouldn't have trivial view
+// operations but this function is to simply make sure if we ever do we don't
+// pull them in.
+TORCH_CUDA_CU_API std::vector<ViewOp*> getViewOps(Fusion*);
+
 template <typename T>
 std::string toString(const T& nodes) {
   std::stringstream ss;
-  for (Statement* stmt : nodes) {
+  for (const Statement* stmt : nodes) {
     if (ss.tellp() != 0) {
       ss << ", ";
     }
@@ -328,6 +331,16 @@ std::string toString(const T& nodes) {
   }
   return ss.str();
 }
+
+// Test if the given tensor is an input of squeeze op
+TORCH_CUDA_CU_API bool isSqueezeInput(const TensorView* tv);
+
+// Test if the given ID in the given tensor is squeezed
+TORCH_CUDA_CU_API bool isSqueezedID(const TensorView* tv, const IterDomain* id);
+
+// Get all IDs of a tensor. Returned values are topologicaly ordered, and
+// unique.
+TORCH_CUDA_CU_API std::vector<IterDomain*> allIDsOf(const TensorView* tv);
 
 } // namespace ir_utils
 } // namespace cuda

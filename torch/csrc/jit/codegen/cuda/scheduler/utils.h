@@ -1,5 +1,7 @@
 #pragma once
 
+#include <torch/csrc/jit/codegen/cuda/compute_at_map.h>
+#include <torch/csrc/jit/codegen/cuda/disjoint_set.h>
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/maxinfo_propagator.h>
@@ -11,7 +13,6 @@ namespace fuser {
 namespace cuda {
 
 class SchedulerRuntimeInfo;
-class ExpressionEvaluator;
 class HeuristicSummary;
 
 namespace scheduler_utils {
@@ -78,15 +79,11 @@ TORCH_CUDA_CU_API inline c10::optional<size_t> mergeDims(
 
 // Merge all reduction to the right side and returns total number of
 // reduction axes. Don't merge is typically used for trivial reductions.
-size_t mergeReduction(
-    TensorView* tv,
-    const std::unordered_set<IterDomain*>& dont_merge = {});
+size_t mergeReduction(TensorView* tv);
 
 // merge all non-reduction axes to the left side and returns total number of
 // iteration axes. Don't merge is typically used for trivial reductions.
-size_t mergeNonReduction(
-    TensorView* tv,
-    const std::unordered_set<IterDomain*>& dont_merge = {});
+size_t mergeNonReduction(TensorView* tv);
 
 // Propagate the parallelization from the selected dimensions of the reference
 // tensor to their corresponding dimensions in all selected tensors in the DAG.
@@ -114,16 +111,6 @@ TORCH_CUDA_CU_API inline void parallelizeAllLike(
       selected_parallel_types,
       propagate_padding);
 }
-
-TORCH_CUDA_CU_API void computeAtInputs(
-    TensorView* consumer,
-    int pos,
-    ComputeAtMode mode = ComputeAtMode::Standard);
-
-TORCH_CUDA_CU_API void computeWithOutputs(
-    TensorView* producer,
-    int pos,
-    ComputeAtMode mode = ComputeAtMode::Standard);
 
 struct PersistentBufferInfo {
   std::vector<TensorView*> persistent_buffers;
@@ -204,14 +191,9 @@ TORCH_CUDA_CU_API PersistentBufferSizeReturn persistentBufferSize(
     PersistentBufferInfo& persistent_buffers,
     HeuristicSummary* data_cache = nullptr);
 
-// Returns a set of all iteration domains (in roots of tensors) that map to a
-// trivial reduction
-std::unordered_set<IterDomain*> getTrivialReductionMap(Fusion* fusion);
-
 // Merges tensor view to the form:
-// [IterationDomain, ReductionDomain, TrivialReductionDim0,
-// TrivialReductionDim1, ...] Returns if <iteration dimensions, reduction
-// dimensions>
+// [IterationDomain, ReductionDomain] Returns if <iteration dimensions,
+// reduction dimensions>
 std::pair<bool, bool> canonicalDimReduction(
     Fusion* fusion,
     TensorView* tv,
@@ -219,9 +201,7 @@ std::pair<bool, bool> canonicalDimReduction(
 
 // Return a list of tensor views that are outputs of reduction operations. If
 // multiple outputs of an expression are found, only include one in the list
-TORCH_CUDA_CU_API std::vector<TensorView*> getReductionTvs(
-    Fusion* fusion,
-    bool ignore_trivial = true);
+TORCH_CUDA_CU_API std::vector<TensorView*> getReductionTvs(Fusion* fusion);
 
 // Returns a list of TensorViews that are the consumer tv for a view operation.
 std::vector<TensorView*> getViewTVs(Fusion* fusion);
@@ -298,6 +278,41 @@ std::vector<TensorView*> getInputsOutputsWithInnerDim(
     bool inner_only,
     bool vectorize_pass);
 
+// Holder return struct for the below function.
+struct DisjointViewSetInfo {
+  // const* to the disjoint set in disjoint_view_set passed in to
+  // getDisjointViewSetsOf each iterdomain in the rfactor of ref is mapped to.
+  //
+  // WARNING: these pointers are relative to the disjoint_view_set reference
+  // passed into getDisjointViewSetsOf it's the user's responsibility to
+  // maintain the lifetime of that reference to match this vector.
+  std::vector<const VectorOfUniqueEntries<IterDomain*>*> disjoint_sets_of_ref;
+
+  // Unique ID associated to the disjoint view group the rfactor id belongs to
+  // in disjoint_sets_of_ref. It's straight forward to map from
+  // disjoint_sets_of_ref to the vector, but not the other way around.
+  std::vector<int> disjoint_set_ids;
+
+  // TensorView reference the above vectors are relative to.
+  TensorView* ref;
+};
+
+// Returns disjoint view sets mapped onto the given reference. Returns a pair
+// of vectors of size rfactorDomain of reference. Vector of
+// VectorOfUniqueEntries returns a const* to the disjoint set in
+// disjoint_view_set the iterdomain is mapped to. Integer vector represents
+// which disjoint view group the rfactor id belongs to. It's straight forward
+// to map from the former to the latter, but not the latter to former.
+//
+// Since we return a const* to entries in disjoint_view_set, it must be passed
+// in as a reference. Algorithm is N^2 based on number of dims in reference,
+// but generating the disjoint view set is likely the limiter on perf of this
+// function.
+DisjointViewSetInfo getDisjointViewSetsOf(
+    Fusion* fusion,
+    TensorView* of,
+    DisjointSets<IterDomain*>& disjoint_view_set);
+
 // Structure to hold byte multiples for break points. I.e. if we have the
 // tensors:
 // T0[I0, I1] float
@@ -312,24 +327,26 @@ struct BroadcastMultiple {
   int64_t lhs_multiple = 0;
 };
 
-// Returns a vector of counts, size = reference_tv->getRootDomain().size(), each
-// entry [i] is the number of inputs/outputs that have a non-broadcast dimension
-// mapped to the corresponding dimension in reference_tv. Count includes
-// reference_tv if reference_tv is an input or output. Count is multiplied by
-// data type size.
-std::vector<BroadcastMultiple> getBroadcastMultiples(
-    TensorView* reference_tv,
-    DataType index_type);
+struct BroadcastMultipleInformation {
+  std::vector<int> view_disjoint_set_ids;
+  std::vector<BroadcastMultiple> broadcast_multiples;
+};
 
-//! Collect maximum vectorization word size of a tensor whose
-//! innermost domain is leaf_merged_domain. Contig merging is taken
-//! into account to expand vectorization if possible.
-size_t collectMaxVectorizeSizeWithContigMerge(
-    TensorView* tv,
-    IterDomain* leaf_merged_domain,
-    size_t max_word_size_in_byte,
-    ExpressionEvaluator& expression_evaluator,
-    DataType index_type);
+// Returns a vector of size reference_tv->getMaybeRFactorDomain().size() which
+// is a view disjoint set id of each of those iter domains. If entries share the
+// same value, they undergo view transformations in the fusion together.
+// Broadcast multiples are also of size
+// reference_tv->getMaybeRFactorDomain().size(), each entry [i] is the number of
+// inputs/outputs that have a non-broadcast dimension mapped to the
+// corresponding dimension in reference_tv. Broadcast multiples includes
+// reference_tv if reference_tv is an input or output. Broadcast multiples is
+// multiplied by data type size. In the case of view operations the broadcast
+// multiple is the full multiple size if any domain in the group maps to a
+// non-broadcast dimension in the given input/output. Otherwise if all
+// dimensions are broadcast that input/output will not contribute to the
+// multiple.
+TORCH_CUDA_CU_API BroadcastMultipleInformation
+getBroadcastMultiples(TensorView* reference_tv, DataType index_type);
 
 namespace matmul_utils {
 //! Utilities in this namespace facilitates scheduling matmul kernels with
@@ -491,6 +508,46 @@ struct TORCH_CUDA_CU_API BoundedDirectionalTransformPropagator {
       std::unordered_set<TensorView*> included_tvs,
       Options options);
 };
+
+// Schedulers typically start by merging some axes together then splitting,
+// and propagating those transformations through the dag. What we want to
+// understand is if these merges can be supported through view operations.
+// For example it could be problematic to support a reduction fusion:
+//
+// tv0[2, 3, 4]
+// tv1 = sum(tv0, {1, 2})
+// tv2 = view(tv0, {6, 4})
+//
+// Since the first step of the reduction scheduler would be tv1->merge(1, 2).
+// If we tried to propagate this transformation through the view it would make
+// the view invalid. If we tried to propagate the view through the reduction,
+// it would attempt to merge a reduction and non-reduction dimension. So for
+// these types of fusions we would like to understand that the view considers
+// axis 1 and 2 of tv1 as "non-separable" axes.
+//
+// If IterDomains are disjoint in the returned set, then they are considered
+// "separable".
+// Warning: This pass generates the IdGraphs, not intended for use at runtime.
+TORCH_CUDA_CU_API DisjointSets<IterDomain*> disjointViewSets(Fusion* fusion);
+
+// Makes sure that there are no group id's left of pos that match right of pos.
+// e.g.
+// [1, 0, 0] pos 2 would return false
+// [1, 0, 0] pos 1 would return true
+TORCH_CUDA_CU_API bool breakIsDisjoint(std::vector<int> group_ids, int pos);
+
+// Generates an old to new map to reorder tv's domain as the rfactor order.
+// Priority is given to inner most dimensions for example:
+// rfactor [i0, i1, i2]
+// domain [i0*i2, i1]
+// will produce the map {{0, 1}, {1, 0}}
+// This is somewhat similar to orderTiledConcreteIdAsRoot
+TORCH_CUDA_CU_API std::unordered_map<int, int> domainReorderAsRfactorMap(
+    TensorView* tv);
+
+// Assumes view's are consistent as detected by
+// registery.cpp::requiresForwardViewReplay returning false
+void propagateViewTransforms(Fusion* fusion, const ComputeAtMap& ca_map);
 
 } // namespace scheduler_utils
 } // namespace cuda

@@ -1,5 +1,7 @@
 #include <torch/csrc/jit/codegen/cuda/type.h>
 
+#include <ATen/cuda/CUDAContext.h>
+
 #include <stdexcept>
 #include <unordered_map>
 
@@ -160,6 +162,17 @@ DataType getTypeFromComplexType(DataType dtype) {
   }
 }
 
+bool isSupportedTypeByDevice(DataType dtype) {
+  auto prop = at::cuda::getCurrentDeviceProperties();
+  auto major_ver = prop->major;
+  switch (dtype) {
+    case DataType::BFloat16:
+      return major_ver >= 8;
+    default:
+      return true;
+  }
+}
+
 bool isIntegerOp(const BinaryOpType bopt) {
   return bopt >= BinaryOpType::Mod && bopt <= BinaryOpType::Rshift;
 }
@@ -258,8 +271,6 @@ static const char* val_type2string(ValType t) {
       return "Predicate";
     case ValType::TensorIndex:
       return "TensorIndex";
-    case ValType::IntPair:
-      return "IntPair";
     default:
       TORCH_INTERNAL_ASSERT(false, "No string found for val type.");
   }
@@ -290,8 +301,12 @@ static const char* predicate_type2string(PredicateType t) {
 
 static const char* expr_type2string(ExprType t) {
   switch (t) {
+    case ExprType::FullOp:
+      return "FullOp";
     case ExprType::ARangeOp:
       return "ARangeOp";
+    case ExprType::EyeOp:
+      return "EyeOp";
     case ExprType::UnaryOp:
       return "UnaryOp";
     case ExprType::BinaryOp:
@@ -306,6 +321,8 @@ static const char* expr_type2string(ExprType t) {
       return "GroupedReductionOp";
     case ExprType::BroadcastOp:
       return "BroadcastOp";
+    case ExprType::SqueezeOp:
+      return "SqueezeOp";
     case ExprType::WelfordOp:
       return "WelfordOp";
     case ExprType::GroupedWelfordOp:
@@ -405,8 +422,12 @@ static const char* unary_op_type2string(UnaryOpType t) {
       return "abs";
     case UnaryOpType::Acos:
       return "acos";
+    case UnaryOpType::Acosh:
+      return "acosh";
     case UnaryOpType::Asin:
       return "asin";
+    case UnaryOpType::Asinh:
+      return "asinh";
     case UnaryOpType::Atan:
       return "atan";
     case UnaryOpType::Atanh:
@@ -421,12 +442,18 @@ static const char* unary_op_type2string(UnaryOpType t) {
       return "cosh";
     case UnaryOpType::Exp:
       return "exp";
+    case UnaryOpType::Exp2:
+      return "exp2";
     case UnaryOpType::Expm1:
       return "expm1";
     case UnaryOpType::Erf:
       return "erf";
     case UnaryOpType::Erfc:
       return "erfc";
+    case UnaryOpType::Erfinv:
+      return "erfinv";
+    case UnaryOpType::Erfcinv:
+      return "erfcinv";
     case UnaryOpType::Floor:
       return "floor";
     case UnaryOpType::Frac:
@@ -565,6 +592,10 @@ static const char* binary_op_type2string(BinaryOpType t) {
     // Logical Ops
     case BinaryOpType::And:
       return "and";
+    case BinaryOpType::Or:
+      return "or";
+    case BinaryOpType::Xor:
+      return "xor";
     case BinaryOpType::Eq:
       return "equal";
     case BinaryOpType::GE:
@@ -656,6 +687,8 @@ static const char* rng_op_type_inline_op2string(RNGOpType t) {
   switch (t) {
     case RNGOpType::Uniform:
       return "rng_uniform";
+    case RNGOpType::UniformRange:
+      return "rng_uniform_range";
     default:
       break;
   }
@@ -694,6 +727,8 @@ static const char* rng_op_type2string(RNGOpType t) {
   switch (t) {
     case RNGOpType::Uniform:
       return "rng_uniform";
+    case RNGOpType::UniformRange:
+      return "rng_uniform_range";
     default:
       TORCH_INTERNAL_ASSERT(false, "Unexpected RNGOpType");
   }
@@ -769,10 +804,12 @@ static const char* memory_type2string(MemoryType t) {
 
 static const char* id_map_mode_type2string(IdMappingMode t) {
   switch (t) {
-    case IdMappingMode::PERMISSIVE:
-      return "permissive";
     case IdMappingMode::EXACT:
       return "exact";
+    case IdMappingMode::ALMOSTEXACT:
+      return "almost_exact";
+    case IdMappingMode::PERMISSIVE:
+      return "permissive";
     case IdMappingMode::LOOP:
       return "loop";
     default:
@@ -909,18 +946,69 @@ static const char* supported_casts2string(
     case supported_switch_pair(DataType::Bool, DataType::ComplexFloat):
     case supported_switch_pair(DataType::ComplexDouble, DataType::ComplexFloat):
       return "(std::complex<float>)";
+
     case supported_switch_pair(DataType::Float, DataType::Half):
       return "__float2half";
     case supported_switch_pair(DataType::Double, DataType::Half):
       return "__double2half";
-    case supported_switch_pair(DataType::Float, DataType::BFloat16):
-      return "__float2bfloat";
+    case supported_switch_pair(DataType::Int32, DataType::Half):
+      return "__int322half";
+    case supported_switch_pair(DataType::Int, DataType::Half):
+      return "__int2half";
+    case supported_switch_pair(DataType::Bool, DataType::Half):
+      return "__bool2half";
+    case supported_switch_pair(DataType::ComplexFloat, DataType::Half):
+    case supported_switch_pair(DataType::ComplexDouble, DataType::Half):
+      return "__real_then_2half";
+
     case supported_switch_pair(DataType::Half, DataType::Float):
       return "__half2float";
     case supported_switch_pair(DataType::Half, DataType::Double):
       return "__half2double";
+    case supported_switch_pair(DataType::Half, DataType::Int32):
+      return "__half2int32";
+    case supported_switch_pair(DataType::Half, DataType::Int):
+      return "__half2int";
+    case supported_switch_pair(DataType::Half, DataType::Bool):
+      return "__half2bool";
+    case supported_switch_pair(DataType::Half, DataType::ComplexFloat):
+      return "(std::complex<float>)__half2float";
+    case supported_switch_pair(DataType::Half, DataType::ComplexDouble):
+      return "(std::complex<double>)__half2double";
+
+    case supported_switch_pair(DataType::Float, DataType::BFloat16):
+      return "__float2bfloat";
+    case supported_switch_pair(DataType::Double, DataType::BFloat16):
+      return "__double2bfloat";
+    case supported_switch_pair(DataType::Half, DataType::BFloat16):
+      return "__half2bfloat";
+    case supported_switch_pair(DataType::Int32, DataType::BFloat16):
+      return "__int322bfloat";
+    case supported_switch_pair(DataType::Int, DataType::BFloat16):
+      return "__int2bfloat";
+    case supported_switch_pair(DataType::Bool, DataType::BFloat16):
+      return "__bool2bfloat";
+    case supported_switch_pair(DataType::ComplexFloat, DataType::BFloat16):
+    case supported_switch_pair(DataType::ComplexDouble, DataType::BFloat16):
+      return "__real_then_2bfloat";
+
     case supported_switch_pair(DataType::BFloat16, DataType::Float):
       return "__bfloat2float";
+    case supported_switch_pair(DataType::BFloat16, DataType::Double):
+      return "__bfloat2double";
+    case supported_switch_pair(DataType::BFloat16, DataType::Half):
+      return "__bfloat2half";
+    case supported_switch_pair(DataType::BFloat16, DataType::Int32):
+      return "__bfloat2int32";
+    case supported_switch_pair(DataType::BFloat16, DataType::Int):
+      return "__bfloat2int";
+    case supported_switch_pair(DataType::BFloat16, DataType::Bool):
+      return "__bfloat2bool";
+    case supported_switch_pair(DataType::BFloat16, DataType::ComplexFloat):
+      return "(std::complex<float>)__bfloat2float";
+    case supported_switch_pair(DataType::BFloat16, DataType::ComplexDouble):
+      return "(std::complex<double>)__bfloat2double";
+
     default:
       return nullptr;
   }
@@ -1054,6 +1142,9 @@ TORCH_CUDA_CU_API std::ostream& operator<<(
       break;
     case Swizzle2DType::XOR:
       os << "Xor";
+      break;
+    case Swizzle2DType::CyclicShift:
+      os << "CyclicShift";
       break;
     case Swizzle2DType::Scatter:
       os << "Scatter";
